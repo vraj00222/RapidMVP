@@ -1,11 +1,16 @@
-import { auth } from "@/lib/auth/auth";
+import { NextRequest, NextResponse } from "next/server";
 
-export default auth((req) => {
-  const isLoggedIn = !!req.auth;
+const protectedRoutes = ["/dashboard", "/chat"];
+const authRoutes = ["/login", "/signup"];
+
+export function middleware(req: NextRequest) {
   const { pathname } = req.nextUrl;
 
-  const protectedRoutes = ["/dashboard", "/chat"];
-  const authRoutes = ["/login", "/signup"];
+  const sessionToken =
+    req.cookies.get("authjs.session-token")?.value ||
+    req.cookies.get("__Secure-authjs.session-token")?.value;
+
+  const isLoggedIn = !!sessionToken;
 
   const isProtected = protectedRoutes.some((route) =>
     pathname.startsWith(route)
@@ -13,15 +18,17 @@ export default auth((req) => {
   const isAuthRoute = authRoutes.some((route) => pathname.startsWith(route));
 
   if (isProtected && !isLoggedIn) {
-    const loginUrl = new URL("/login", req.nextUrl.origin);
+    const loginUrl = new URL("/login", req.url);
     loginUrl.searchParams.set("callbackUrl", pathname);
-    return Response.redirect(loginUrl);
+    return NextResponse.redirect(loginUrl);
   }
 
   if (isAuthRoute && isLoggedIn) {
-    return Response.redirect(new URL("/dashboard", req.nextUrl.origin));
+    return NextResponse.redirect(new URL("/dashboard", req.url));
   }
-});
+
+  return NextResponse.next();
+}
 
 export const config = {
   matcher: ["/dashboard/:path*", "/chat/:path*", "/login", "/signup"],
