@@ -1,11 +1,20 @@
 import mongoose, { Schema, Document, Model } from "mongoose";
 
+export interface IProjectFile {
+  path: string;
+  content: string;
+  language: string;
+}
+
 export interface IProject extends Document {
   name: string;
   description: string;
   owner: mongoose.Types.ObjectId;
   status: "draft" | "generating" | "ready" | "deployed";
   techStack: string[];
+  files: IProjectFile[];
+  thumbnail: string;
+  generationCount: number;
   chatHistory: {
     role: "user" | "assistant";
     content: string;
@@ -41,6 +50,21 @@ const ProjectSchema = new Schema<IProject>(
     techStack: {
       type: [String],
       default: [],
+    },
+    files: [
+      {
+        path: { type: String, required: true },
+        content: { type: String, required: true },
+        language: { type: String, default: "typescript" },
+      },
+    ],
+    thumbnail: {
+      type: String,
+      default: "",
+    },
+    generationCount: {
+      type: Number,
+      default: 0,
     },
     chatHistory: [
       {
