@@ -2,13 +2,14 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { useSession } from "next-auth/react";
 import { motion, AnimatePresence } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { 
-  Zap, 
-  Menu, 
+import { ProfileDropdown } from "@/components/ui/profile-dropdown";
+import {
+  Zap,
+  Menu,
   X,
-  Github
 } from "lucide-react";
 
 const navLinks = [
@@ -20,6 +21,7 @@ const navLinks = [
 
 export function Navbar() {
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
+  const { data: session } = useSession();
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 border-b border-zinc-200/50 bg-white/80 backdrop-blur-xl dark:border-zinc-800/50 dark:bg-zinc-950/80">
@@ -50,17 +52,23 @@ export function Navbar() {
 
           {/* Desktop CTA */}
           <div className="hidden md:flex md:items-center md:gap-3">
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="https://github.com" target="_blank">
-                <Github className="h-4 w-4" />
-              </Link>
-            </Button>
-            <Button variant="ghost" size="sm" asChild>
-              <Link href="/login">Sign in</Link>
-            </Button>
-            <Button size="sm" asChild>
-              <Link href="/chat">Start Building</Link>
-            </Button>
+            {session ? (
+              <>
+                <Button size="sm" asChild>
+                  <Link href="/dashboard">Dashboard</Link>
+                </Button>
+                <ProfileDropdown />
+              </>
+            ) : (
+              <>
+                <Button variant="ghost" size="sm" asChild>
+                  <Link href="/login">Sign in</Link>
+                </Button>
+                <Button size="sm" asChild>
+                  <Link href="/signup">Start Building</Link>
+                </Button>
+              </>
+            )}
           </div>
 
           {/* Mobile menu button */}
@@ -98,12 +106,22 @@ export function Navbar() {
                 </Link>
               ))}
               <div className="flex flex-col gap-2 pt-4">
-                <Button variant="outline" asChild>
-                  <Link href="/login">Sign in</Link>
-                </Button>
-                <Button asChild>
-                  <Link href="/chat">Start Building</Link>
-                </Button>
+                {session ? (
+                  <>
+                    <Button asChild>
+                      <Link href="/dashboard">Dashboard</Link>
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button variant="outline" asChild>
+                      <Link href="/login">Sign in</Link>
+                    </Button>
+                    <Button asChild>
+                      <Link href="/signup">Start Building</Link>
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
           </motion.div>

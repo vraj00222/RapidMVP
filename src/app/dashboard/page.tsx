@@ -1,12 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Input } from "@/components/ui/input";
 import {
   Zap,
@@ -26,8 +26,6 @@ import {
   Code2,
   Rocket,
   CreditCard,
-  LogOut,
-  ChevronDown,
   Home,
   MessageSquare,
   Layers,
@@ -35,6 +33,7 @@ import {
   HelpCircle,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SidebarProfile } from "@/components/ui/profile-dropdown";
 
 const projects = [
   {
@@ -103,6 +102,7 @@ const sidebarLinks = [
 ];
 
 export default function DashboardPage() {
+  const { data: session } = useSession();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [searchQuery, setSearchQuery] = useState("");
 
@@ -167,20 +167,7 @@ export default function DashboardPage() {
 
         {/* User */}
         <div className="border-t border-zinc-200 p-4 dark:border-zinc-800">
-          <button className="flex w-full items-center gap-3 rounded-lg p-2 hover:bg-zinc-100 dark:hover:bg-zinc-800">
-            <Avatar className="h-8 w-8">
-              <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white text-xs">
-                VP
-              </AvatarFallback>
-            </Avatar>
-            <div className="flex-1 text-left">
-              <p className="text-sm font-medium text-zinc-900 dark:text-white">
-                Vraj Patel
-              </p>
-              <p className="text-xs text-zinc-500">Free Plan</p>
-            </div>
-            <ChevronDown className="h-4 w-4 text-zinc-400" />
-          </button>
+          <SidebarProfile />
         </div>
       </aside>
 
@@ -193,7 +180,7 @@ export default function DashboardPage() {
               Dashboard
             </h1>
             <p className="text-sm text-zinc-500">
-              Welcome back! Here&apos;s what you&apos;ve been building.
+              Welcome back{session?.user?.name ? `, ${session.user.name.split(" ")[0]}` : ""}! Here&apos;s what you&apos;ve been building.
             </p>
           </div>
           <div className="flex items-center gap-3">

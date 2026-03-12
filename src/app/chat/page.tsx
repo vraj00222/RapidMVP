@@ -31,6 +31,7 @@ import {
   Bot,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SidebarProfile } from "@/components/ui/profile-dropdown";
 
 interface Message {
   id: string;
@@ -193,19 +194,7 @@ export default function ChatPage() {
 
             {/* User Section */}
             <div className="border-t border-zinc-200 p-4 dark:border-zinc-800">
-              <div className="flex items-center gap-3">
-                <Avatar className="h-8 w-8">
-                  <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white text-xs">
-                    VP
-                  </AvatarFallback>
-                </Avatar>
-                <div className="flex-1 truncate">
-                  <p className="text-sm font-medium text-zinc-900 dark:text-white">
-                    Vraj Patel
-                  </p>
-                  <p className="text-xs text-zinc-500">Free Plan</p>
-                </div>
-              </div>
+              <SidebarProfile />
             </div>
           </motion.aside>
         )}
