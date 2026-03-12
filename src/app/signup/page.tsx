@@ -1,7 +1,9 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import Link from "next/link";
+import { signIn } from "next-auth/react";
 import { motion } from "framer-motion";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -16,15 +18,59 @@ const features = [
 ];
 
 export default function SignupPage() {
+  const router = useRouter();
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState("");
 
-  const handleSubmit = async (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
     setIsLoading(true);
-    // Simulate API call
-    await new Promise((resolve) => setTimeout(resolve, 1000));
-    setIsLoading(false);
+    setError("");
+
+    const formData = new FormData(e.currentTarget);
+    const firstName = formData.get("firstName") as string;
+    const lastName = formData.get("lastName") as string;
+    const email = formData.get("email") as string;
+    const password = formData.get("password") as string;
+
+    if (password.length < 6) {
+      setError("Password must be at least 6 characters");
+      setIsLoading(false);
+      return;
+    }
+
+    const res = await fetch("/api/auth/signup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        name: `${firstName} ${lastName}`.trim(),
+        email,
+        password,
+      }),
+    });
+
+    const data = await res.json();
+
+    if (!res.ok) {
+      setError(data.error || "Something went wrong");
+      setIsLoading(false);
+      return;
+    }
+
+    const signInResult = await signIn("credentials", {
+      email,
+      password,
+      redirect: false,
+    });
+
+    if (signInResult?.error) {
+      setError("Account created but sign-in failed. Please log in manually.");
+      setIsLoading(false);
+      router.push("/login");
+    } else {
+      router.push("/dashboard");
+    }
   };
 
   return (
@@ -97,6 +143,12 @@ export default function SignupPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="px-0 lg:px-6">
+              {error && (
+                <div className="mb-4 rounded-lg bg-red-50 p-3 text-sm text-red-600">
+                  {error}
+                </div>
+              )}
+
               {/* OAuth Buttons */}
               <div className="grid gap-3">
                 <Button variant="outline" className="w-full" disabled={isLoading}>
@@ -146,6 +198,7 @@ export default function SignupPage() {
                     </label>
                     <Input
                       id="firstName"
+                      name="firstName"
                       type="text"
                       placeholder="John"
                       required
@@ -158,6 +211,7 @@ export default function SignupPage() {
                     </label>
                     <Input
                       id="lastName"
+                      name="lastName"
                       type="text"
                       placeholder="Doe"
                       required
@@ -171,6 +225,7 @@ export default function SignupPage() {
                   </label>
                   <Input
                     id="email"
+                    name="email"
                     type="email"
                     placeholder="you@example.com"
                     required
@@ -184,6 +239,7 @@ export default function SignupPage() {
                   <div className="relative">
                     <Input
                       id="password"
+                      name="password"
                       type={showPassword ? "text" : "password"}
                       placeholder="Create a password"
                       required
@@ -202,7 +258,7 @@ export default function SignupPage() {
                     </button>
                   </div>
                   <p className="text-xs text-zinc-500">
-                    Must be at least 8 characters
+                    Must be at least 6 characters
                   </p>
                 </div>
                 <Button type="submit" className="w-full" disabled={isLoading}>
