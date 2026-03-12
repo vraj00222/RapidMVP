@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSession } from "next-auth/react";
 import Link from "next/link";
 import { motion } from "framer-motion";
@@ -16,13 +16,9 @@ import {
   LayoutGrid,
   List,
   Clock,
-  Star,
-  MoreHorizontal,
   ExternalLink,
   Trash2,
-  Copy,
   FolderOpen,
-  TrendingUp,
   Code2,
   Rocket,
   CreditCard,
@@ -31,67 +27,52 @@ import {
   Layers,
   BookOpen,
   HelpCircle,
+  Loader2,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarProfile } from "@/components/ui/profile-dropdown";
 
-const projects = [
-  {
-    id: 1,
-    name: "E-commerce Landing",
-    description: "Modern e-commerce landing page with product grid",
-    lastEdited: "2 hours ago",
-    status: "published",
-    thumbnail: "from-violet-500 to-purple-600",
-  },
-  {
-    id: 2,
-    name: "Analytics Dashboard",
-    description: "Admin dashboard with charts and data tables",
-    lastEdited: "Yesterday",
-    status: "draft",
-    thumbnail: "from-blue-500 to-cyan-600",
-  },
-  {
-    id: 3,
-    name: "Blog Platform",
-    description: "Personal blog with markdown support",
-    lastEdited: "3 days ago",
-    status: "published",
-    thumbnail: "from-emerald-500 to-teal-600",
-  },
-  {
-    id: 4,
-    name: "Portfolio Site",
-    description: "Developer portfolio with project showcase",
-    lastEdited: "1 week ago",
-    status: "draft",
-    thumbnail: "from-orange-500 to-red-600",
-  },
-  {
-    id: 5,
-    name: "SaaS Pricing Page",
-    description: "Pricing page with comparison table",
-    lastEdited: "2 weeks ago",
-    status: "published",
-    thumbnail: "from-pink-500 to-rose-600",
-  },
-  {
-    id: 6,
-    name: "AI Chat Interface",
-    description: "ChatGPT-style chat UI with streaming",
-    lastEdited: "1 month ago",
-    status: "draft",
-    thumbnail: "from-indigo-500 to-violet-600",
-  },
+interface Project {
+  _id: string;
+  name: string;
+  description: string;
+  status: "draft" | "generating" | "ready" | "deployed";
+  thumbnail: string;
+  generationCount: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+const GRADIENT_COLORS = [
+  "from-violet-500 to-purple-600",
+  "from-blue-500 to-cyan-600",
+  "from-emerald-500 to-teal-600",
+  "from-orange-500 to-red-600",
+  "from-pink-500 to-rose-600",
+  "from-indigo-500 to-violet-600",
 ];
 
-const stats = [
-  { label: "Total Projects", value: "12", icon: FolderOpen, change: "+2" },
-  { label: "Generations", value: "847", icon: Code2, change: "+124" },
-  { label: "Deployments", value: "8", icon: Rocket, change: "+3" },
-  { label: "Credits Left", value: "1,250", icon: CreditCard, change: "-" },
-];
+function getGradient(index: number): string {
+  return GRADIENT_COLORS[index % GRADIENT_COLORS.length];
+}
+
+function timeAgo(dateString: string): string {
+  const now = new Date();
+  const date = new Date(dateString);
+  const seconds = Math.floor((now.getTime() - date.getTime()) / 1000);
+
+  if (seconds < 60) return "just now";
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  const weeks = Math.floor(days / 7);
+  if (weeks < 4) return `${weeks}w ago`;
+  const months = Math.floor(days / 30);
+  return `${months}mo ago`;
+}
 
 const sidebarLinks = [
   { icon: Home, label: "Dashboard", href: "/dashboard", active: true },
@@ -105,12 +86,69 @@ export default function DashboardPage() {
   const { data: session } = useSession();
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
   const [searchQuery, setSearchQuery] = useState("");
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [deleting, setDeleting] = useState<string | null>(null);
+
+  const fetchProjects = useCallback(async () => {
+    try {
+      const res = await fetch("/api/projects");
+      if (res.ok) {
+        const data = await res.json();
+        setProjects(data.projects);
+      }
+    } catch {
+      // silently fail — user will see empty state
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchProjects();
+  }, [fetchProjects]);
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Are you sure you want to delete this project?")) return;
+    setDeleting(id);
+    try {
+      const res = await fetch(`/api/projects/${id}`, { method: "DELETE" });
+      if (res.ok) {
+        setProjects((prev) => prev.filter((p) => p._id !== id));
+      }
+    } catch {
+      // silently fail
+    } finally {
+      setDeleting(null);
+    }
+  };
 
   const filteredProjects = projects.filter(
     (project) =>
       project.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
       project.description.toLowerCase().includes(searchQuery.toLowerCase())
   );
+
+  const stats = [
+    { label: "Total Projects", value: projects.length.toString(), icon: FolderOpen },
+    {
+      label: "Generations",
+      value: projects.reduce((sum, p) => sum + (p.generationCount || 0), 0).toString(),
+      icon: Code2,
+    },
+    {
+      label: "Deployed",
+      value: projects.filter((p) => p.status === "deployed").length.toString(),
+      icon: Rocket,
+    },
+    {
+      label: "In Progress",
+      value: projects
+        .filter((p) => p.status === "generating" || p.status === "draft")
+        .length.toString(),
+      icon: CreditCard,
+    },
+  ];
 
   return (
     <div className="flex h-screen bg-zinc-50 dark:bg-zinc-950">
@@ -180,7 +218,11 @@ export default function DashboardPage() {
               Dashboard
             </h1>
             <p className="text-sm text-zinc-500">
-              Welcome back{session?.user?.name ? `, ${session.user.name.split(" ")[0]}` : ""}! Here&apos;s what you&apos;ve been building.
+              Welcome back
+              {session?.user?.name
+                ? `, ${session.user.name.split(" ")[0]}`
+                : ""}
+              ! Here&apos;s what you&apos;ve been building.
             </p>
           </div>
           <div className="flex items-center gap-3">
@@ -215,17 +257,9 @@ export default function DashboardPage() {
                     </div>
                     <div>
                       <p className="text-sm text-zinc-500">{stat.label}</p>
-                      <div className="flex items-baseline gap-2">
-                        <p className="text-2xl font-bold text-zinc-900 dark:text-white">
-                          {stat.value}
-                        </p>
-                        {stat.change !== "-" && (
-                          <span className="flex items-center text-xs font-medium text-emerald-600">
-                            <TrendingUp className="mr-0.5 h-3 w-3" />
-                            {stat.change}
-                          </span>
-                        )}
-                      </div>
+                      <p className="text-2xl font-bold text-zinc-900 dark:text-white">
+                        {loading ? "—" : stat.value}
+                      </p>
                     </div>
                   </CardContent>
                 </Card>
@@ -276,12 +310,19 @@ export default function DashboardPage() {
               </div>
             </div>
 
-            {/* Projects Grid/List */}
-            {viewMode === "grid" ? (
+            {/* Loading State */}
+            {loading ? (
+              <div className="mt-12 flex flex-col items-center justify-center">
+                <Loader2 className="h-8 w-8 animate-spin text-violet-600" />
+                <p className="mt-4 text-sm text-zinc-500">
+                  Loading your projects...
+                </p>
+              </div>
+            ) : viewMode === "grid" ? (
               <div className="mt-6 grid gap-6 sm:grid-cols-2 lg:grid-cols-3">
                 {filteredProjects.map((project, index) => (
                   <motion.div
-                    key={project.id}
+                    key={project._id}
                     initial={{ opacity: 0, y: 20 }}
                     animate={{ opacity: 1, y: 0 }}
                     transition={{ delay: index * 0.05 }}
@@ -289,23 +330,26 @@ export default function DashboardPage() {
                     <Card className="group overflow-hidden transition-all duration-300 hover:shadow-lg hover:-translate-y-1">
                       {/* Thumbnail */}
                       <div
-                        className={`relative aspect-[16/10] bg-gradient-to-br ${project.thumbnail}`}
+                        className={`relative aspect-[16/10] bg-gradient-to-br ${project.thumbnail || getGradient(index)}`}
                       >
                         <div className="absolute inset-0 flex items-center justify-center">
                           <div className="h-3/4 w-3/4 rounded-lg bg-white/10 backdrop-blur-sm" />
                         </div>
                         {/* Actions overlay */}
                         <div className="absolute inset-0 flex items-center justify-center gap-2 bg-black/0 opacity-0 transition-all group-hover:bg-black/40 group-hover:opacity-100">
-                          <Button size="sm" variant="secondary">
-                            <ExternalLink className="mr-2 h-4 w-4" />
-                            Open
+                          <Button size="sm" variant="secondary" asChild>
+                            <Link href={`/chat/${project._id}`}>
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                              Open
+                            </Link>
                           </Button>
                         </div>
                         {/* Status badge */}
                         <div className="absolute right-3 top-3">
                           <Badge
                             variant={
-                              project.status === "published"
+                              project.status === "ready" ||
+                              project.status === "deployed"
                                 ? "success"
                                 : "secondary"
                             }
@@ -316,21 +360,29 @@ export default function DashboardPage() {
                       </div>
                       <CardContent className="p-4">
                         <div className="flex items-start justify-between">
-                          <div>
-                            <h3 className="font-semibold text-zinc-900 dark:text-white">
+                          <div className="min-w-0 flex-1">
+                            <h3 className="font-semibold text-zinc-900 dark:text-white truncate">
                               {project.name}
                             </h3>
                             <p className="mt-1 text-sm text-zinc-500 line-clamp-1">
-                              {project.description}
+                              {project.description || "No description"}
                             </p>
                           </div>
-                          <button className="rounded-lg p-1.5 text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 dark:hover:bg-zinc-800">
-                            <MoreHorizontal className="h-4 w-4" />
+                          <button
+                            onClick={() => handleDelete(project._id)}
+                            disabled={deleting === project._id}
+                            className="ml-2 rounded-lg p-1.5 text-zinc-400 hover:bg-red-50 hover:text-red-500 dark:hover:bg-red-950/20"
+                          >
+                            {deleting === project._id ? (
+                              <Loader2 className="h-4 w-4 animate-spin" />
+                            ) : (
+                              <Trash2 className="h-4 w-4" />
+                            )}
                           </button>
                         </div>
                         <div className="mt-4 flex items-center gap-2 text-xs text-zinc-500">
                           <Clock className="h-3 w-3" />
-                          {project.lastEdited}
+                          {timeAgo(project.updatedAt)}
                         </div>
                       </CardContent>
                     </Card>
@@ -359,7 +411,7 @@ export default function DashboardPage() {
               <div className="mt-6 space-y-2">
                 {filteredProjects.map((project, index) => (
                   <motion.div
-                    key={project.id}
+                    key={project._id}
                     initial={{ opacity: 0, x: -20 }}
                     animate={{ opacity: 1, x: 0 }}
                     transition={{ delay: index * 0.03 }}
@@ -367,51 +419,54 @@ export default function DashboardPage() {
                     <Card className="transition-all hover:shadow-md">
                       <CardContent className="flex items-center gap-4 p-4">
                         <div
-                          className={`flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br ${project.thumbnail}`}
+                          className={`flex h-12 w-12 items-center justify-center rounded-xl bg-gradient-to-br ${project.thumbnail || getGradient(index)}`}
                         >
                           <div className="h-6 w-6 rounded bg-white/20" />
                         </div>
-                        <div className="flex-1">
+                        <div className="flex-1 min-w-0">
                           <div className="flex items-center gap-2">
-                            <h3 className="font-semibold text-zinc-900 dark:text-white">
+                            <h3 className="font-semibold text-zinc-900 dark:text-white truncate">
                               {project.name}
                             </h3>
                             <Badge
                               variant={
-                                project.status === "published"
+                                project.status === "ready" ||
+                                project.status === "deployed"
                                   ? "success"
                                   : "secondary"
                               }
-                              className="text-xs"
+                              className="text-xs shrink-0"
                             >
                               {project.status}
                             </Badge>
                           </div>
-                          <p className="text-sm text-zinc-500">
-                            {project.description}
+                          <p className="text-sm text-zinc-500 truncate">
+                            {project.description || "No description"}
                           </p>
                         </div>
-                        <div className="flex items-center gap-6">
+                        <div className="flex items-center gap-6 shrink-0">
                           <div className="flex items-center gap-1 text-sm text-zinc-500">
                             <Clock className="h-4 w-4" />
-                            {project.lastEdited}
+                            {timeAgo(project.updatedAt)}
                           </div>
                           <div className="flex items-center gap-1">
-                            <Button variant="ghost" size="icon">
-                              <Star className="h-4 w-4" />
-                            </Button>
-                            <Button variant="ghost" size="icon">
-                              <Copy className="h-4 w-4" />
-                            </Button>
-                            <Button variant="ghost" size="icon">
-                              <ExternalLink className="h-4 w-4" />
+                            <Button variant="ghost" size="icon" asChild>
+                              <Link href={`/chat/${project._id}`}>
+                                <ExternalLink className="h-4 w-4" />
+                              </Link>
                             </Button>
                             <Button
                               variant="ghost"
                               size="icon"
                               className="text-red-500 hover:text-red-600"
+                              onClick={() => handleDelete(project._id)}
+                              disabled={deleting === project._id}
                             >
-                              <Trash2 className="h-4 w-4" />
+                              {deleting === project._id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
+                                <Trash2 className="h-4 w-4" />
+                              )}
                             </Button>
                           </div>
                         </div>
@@ -419,8 +474,40 @@ export default function DashboardPage() {
                     </Card>
                   </motion.div>
                 ))}
+
+                {filteredProjects.length === 0 && !loading && (
+                  <div className="mt-12 flex flex-col items-center justify-center py-12">
+                    <FolderOpen className="h-12 w-12 text-zinc-300" />
+                    <p className="mt-4 text-sm text-zinc-500">
+                      {searchQuery
+                        ? "No projects match your search"
+                        : "No projects yet. Create your first one!"}
+                    </p>
+                    {!searchQuery && (
+                      <Button className="mt-4 gap-2" asChild>
+                        <Link href="/chat">
+                          <Plus className="h-4 w-4" />
+                          New Project
+                        </Link>
+                      </Button>
+                    )}
+                  </div>
+                )}
               </div>
             )}
+
+            {/* Empty state for grid view */}
+            {!loading &&
+              viewMode === "grid" &&
+              filteredProjects.length === 0 &&
+              searchQuery && (
+                <div className="mt-12 flex flex-col items-center justify-center py-12">
+                  <Search className="h-12 w-12 text-zinc-300" />
+                  <p className="mt-4 text-sm text-zinc-500">
+                    No projects match &quot;{searchQuery}&quot;
+                  </p>
+                </div>
+              )}
           </div>
         </main>
       </div>
