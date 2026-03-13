@@ -18,7 +18,7 @@ import {
   Copy,
   Check,
   Download,
-  Rocket,
+
   ChevronLeft,
   ChevronRight,
   Sparkles,
@@ -44,8 +44,10 @@ import {
 import { Highlight, themes } from "prism-react-renderer";
 import JSZip from "jszip";
 import { saveAs } from "file-saver";
+import sdk from "@stackblitz/sdk";
 import { cn } from "@/lib/utils";
 import { SidebarProfile } from "@/components/ui/profile-dropdown";
+import { scaffoldProject, buildStackBlitzProject } from "@/lib/export/scaffold";
 
 interface Message {
   _id?: string;
@@ -555,13 +557,24 @@ export default function ProjectChatPage() {
 
   const handleExport = async () => {
     if (generatedFiles.length === 0) return;
+    const name = projectName || "my-project";
+    const scaffolded = scaffoldProject(name, generatedFiles);
     const zip = new JSZip();
-    generatedFiles.forEach((file) => {
+    scaffolded.forEach((file) => {
       zip.file(file.path, file.content);
     });
     const blob = await zip.generateAsync({ type: "blob" });
-    const name = (projectName || "project").replace(/[^a-zA-Z0-9-_]/g, "_");
-    saveAs(blob, `${name}.zip`);
+    const safeName = name.replace(/[^a-zA-Z0-9-_]/g, "_");
+    saveAs(blob, `${safeName}.zip`);
+  };
+
+  const handleOpenInStackBlitz = () => {
+    if (generatedFiles.length === 0) return;
+    const project = buildStackBlitzProject(
+      projectName || "my-project",
+      generatedFiles
+    );
+    sdk.openProject(project, { openFile: "src/main.jsx" });
   };
 
   const handleNewChat = async () => {
@@ -735,9 +748,14 @@ export default function ProjectChatPage() {
               <Download className="h-4 w-4" />
               Export
             </Button>
-            <Button size="sm" className="gap-2">
-              <Rocket className="h-4 w-4" />
-              Deploy
+            <Button
+              size="sm"
+              className="gap-2"
+              onClick={handleOpenInStackBlitz}
+              disabled={generatedFiles.length === 0}
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open in StackBlitz
             </Button>
           </div>
         </header>
