@@ -72,6 +72,146 @@ function extractExplanation(content: string): string {
   return content.substring(0, idx).trim();
 }
 
+const LOADING_WORDS = [
+  "Thinking",
+  "Crafting",
+  "Designing",
+  "Architecting",
+  "Building",
+  "Assembling",
+  "Composing",
+  "Sculpting",
+  "Weaving",
+  "Conjuring",
+  "Tinkering",
+  "Forging",
+  "Dreaming up",
+  "Cooking up",
+  "Spinning up",
+  "Orchestrating",
+];
+
+function LoadingIndicator() {
+  const [wordIndex, setWordIndex] = useState(0);
+  const [dots, setDots] = useState("");
+
+  useEffect(() => {
+    const wordInterval = setInterval(() => {
+      setWordIndex((prev) => (prev + 1) % LOADING_WORDS.length);
+    }, 2400);
+    return () => clearInterval(wordInterval);
+  }, []);
+
+  useEffect(() => {
+    const dotInterval = setInterval(() => {
+      setDots((prev) => (prev.length >= 3 ? "" : prev + "."));
+    }, 500);
+    return () => clearInterval(dotInterval);
+  }, []);
+
+  return (
+    <div className="flex gap-4">
+      <Avatar className="h-8 w-8 shrink-0">
+        <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white">
+          <Bot className="h-4 w-4" />
+        </AvatarFallback>
+      </Avatar>
+      <div className="rounded-2xl bg-white px-4 py-3 shadow-sm dark:bg-zinc-800">
+        <div className="flex items-center gap-3">
+          <div className="relative h-5 w-5">
+            <div className="absolute inset-0 animate-spin rounded-full border-2 border-violet-200 border-t-violet-600" />
+          </div>
+          <AnimatePresence mode="wait">
+            <motion.span
+              key={wordIndex}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.2 }}
+              className="text-sm font-medium text-zinc-600 dark:text-zinc-300"
+            >
+              {LOADING_WORDS[wordIndex]}
+              <span className="inline-block w-5 text-left">{dots}</span>
+            </motion.span>
+          </AnimatePresence>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function buildPreviewHtml(files: GeneratedFile[]): string {
+  // Find the main component file (prefer index/App/page, then first tsx/jsx)
+  const findMain = () => {
+    const priority = ["index.tsx", "index.jsx", "App.tsx", "App.jsx", "page.tsx"];
+    for (const name of priority) {
+      const f = files.find((f) => f.path.endsWith(name));
+      if (f) return f;
+    }
+    return files.find((f) => f.language === "typescript" || f.language === "javascript") || files[0];
+  };
+
+  const mainFile = findMain();
+  if (!mainFile) return "";
+
+  // Collect all component code (combine into one block for the preview)
+  const allCode = files
+    .filter((f) => f.language === "typescript" || f.language === "javascript")
+    .map((f) => {
+      // Strip import/export lines for inline preview rendering
+      return f.content
+        .replace(/^import\s+.*$/gm, "")
+        .replace(/^export\s+default\s+/gm, "const __Component__ = ")
+        .replace(/^export\s+/gm, "");
+    })
+    .join("\n\n");
+
+  // Get the main component name from the default export
+  const exportMatch = mainFile.content.match(
+    /export\s+default\s+function\s+(\w+)/
+  );
+  const componentName = exportMatch?.[1] || "App";
+
+  const cssFiles = files.filter((f) => f.language === "css");
+  const cssContent = cssFiles.map((f) => f.content).join("\n");
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <script src="https://cdn.tailwindcss.com"><\/script>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin><\/script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin><\/script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+  <style>
+    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+    ${cssContent}
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
+
+    ${allCode}
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(React.createElement(${componentName}));
+  <\/script>
+  <script>
+    // Error overlay
+    window.onerror = function(msg, url, line, col, error) {
+      const el = document.createElement("div");
+      el.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);color:#ff6b6b;padding:32px;font-family:monospace;font-size:14px;white-space:pre-wrap;overflow:auto;z-index:9999";
+      el.textContent = "Preview Error:\\n\\n" + msg + (line ? "\\nLine " + line : "");
+      document.body.appendChild(el);
+    };
+  <\/script>
+</body>
+</html>`;
+}
+
 export default function ProjectChatPage() {
   const params = useParams();
   const router = useRouter();
@@ -448,22 +588,7 @@ export default function ProjectChatPage() {
                       </div>
                     </div>
                   ))}
-                  {isLoading && (
-                    <div className="flex gap-4">
-                      <Avatar className="h-8 w-8 shrink-0">
-                        <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white">
-                          <Bot className="h-4 w-4" />
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="rounded-2xl bg-white px-4 py-3 shadow-sm dark:bg-zinc-800">
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-2 animate-bounce rounded-full bg-violet-600 [animation-delay:-0.3s]" />
-                          <div className="h-2 w-2 animate-bounce rounded-full bg-violet-600 [animation-delay:-0.15s]" />
-                          <div className="h-2 w-2 animate-bounce rounded-full bg-violet-600" />
-                        </div>
-                      </div>
-                    </div>
-                  )}
+                  {isLoading && <LoadingIndicator />}
                   {generationError && (
                     <div className="mx-auto max-w-[80%] rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400">
                       {generationError}
@@ -631,43 +756,42 @@ export default function ProjectChatPage() {
             {/* Content */}
             <div className="flex-1 overflow-hidden">
               {activeTab === "preview" ? (
-                <div className="flex h-full items-center justify-center p-8">
-                  {messages.length === 0 ? (
-                    <div className="text-center">
-                      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-zinc-200 dark:bg-zinc-800">
-                        <FolderTree className="h-8 w-8 text-zinc-400" />
+                <div className="flex h-full flex-col">
+                  {generatedFiles.length === 0 ? (
+                    <div className="flex h-full items-center justify-center p-8">
+                      <div className="text-center">
+                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-zinc-200 dark:bg-zinc-800">
+                          <FolderTree className="h-8 w-8 text-zinc-400" />
+                        </div>
+                        <p className="mt-4 text-sm text-zinc-500">
+                          Your preview will appear here
+                        </p>
+                        <p className="mt-1 text-xs text-zinc-400">
+                          Describe what you want to build and see it rendered live
+                        </p>
                       </div>
-                      <p className="mt-4 text-sm text-zinc-500">
-                        Your preview will appear here
-                      </p>
                     </div>
                   ) : (
-                    <div className="h-full w-full overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
-                      <div className="flex h-10 items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 dark:border-zinc-700 dark:bg-zinc-900">
+                    <div className="flex h-full flex-col">
+                      {/* Browser chrome */}
+                      <div className="flex h-10 items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 dark:border-zinc-700 dark:bg-zinc-800">
                         <div className="flex gap-1.5">
                           <div className="h-3 w-3 rounded-full bg-red-400" />
                           <div className="h-3 w-3 rounded-full bg-yellow-400" />
                           <div className="h-3 w-3 rounded-full bg-green-400" />
                         </div>
-                        <div className="ml-4 flex-1 rounded-md bg-white px-3 py-1 text-xs text-zinc-500 dark:bg-zinc-800">
-                          localhost:3000
+                        <div className="ml-4 flex-1 rounded-md bg-white px-3 py-1 text-xs text-zinc-500 dark:bg-zinc-900">
+                          preview://localhost
                         </div>
                       </div>
-                      <div className="p-8">
-                        <div className="mx-auto max-w-xs rounded-xl border border-zinc-200 p-6 shadow-sm dark:border-zinc-700">
-                          <div className="aspect-square rounded-lg bg-gradient-to-br from-violet-100 to-indigo-100 dark:from-violet-900/20 dark:to-indigo-900/20" />
-                          <h3 className="mt-4 text-lg font-semibold">
-                            Product Name
-                          </h3>
-                          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                            A brief description of the product
-                          </p>
-                          <div className="mt-4 flex items-center justify-between">
-                            <span className="text-2xl font-bold">$99</span>
-                            <Button size="sm">Add to Cart</Button>
-                          </div>
-                        </div>
-                      </div>
+                      {/* Live iframe preview */}
+                      <iframe
+                        key={generatedFiles.map((f) => f.path).join(",")}
+                        srcDoc={buildPreviewHtml(generatedFiles)}
+                        className="flex-1 w-full bg-white"
+                        sandbox="allow-scripts"
+                        title="Live Preview"
+                      />
                     </div>
                   )}
                 </div>
