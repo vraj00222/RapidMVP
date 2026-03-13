@@ -19,24 +19,22 @@ IMPORTANT: Return your response in this exact format:
 
 Rules:
 - Use React with JSX and Tailwind CSS
-- Create complete, working components
+- Create complete, working components with well-structured code
 - Use modern React patterns (hooks, functional components)
-- Make the UI look polished with Tailwind CSS
-- Each file should be self-contained and importable
+- Make the UI look polished and professional with Tailwind CSS
+- Generate multiple files with proper separation of concerns (e.g. components/Header.tsx, components/PricingCard.tsx, pages/App.tsx)
 - Use descriptive file paths like "components/ProductCard.tsx"
-- You can generate multiple files if the request is complex
+- The LAST file you output should be the main entry point (e.g. App.tsx or index.tsx) that composes all the other components
 
 CRITICAL rules for browser preview compatibility:
-- Do NOT use TypeScript syntax (no type annotations, no interfaces, no generics, no "as" casts, no enum). Write plain JavaScript/JSX in .tsx files.
-- Do NOT import from external packages (no "import React from 'react'", no "import { useState } from 'react'"). React and all hooks are available as globals.
-- Always use "export default function ComponentName()" for the main component in each file.
-- Do NOT use "import" or "require" to reference other generated files. If you need shared code, put everything in a single file OR define all helpers before they are used.
-- Keep all code in as FEW files as possible (ideally one file).
+- Do NOT use TypeScript syntax (no type annotations, no interfaces, no generics, no "as" casts, no enum). Write plain JavaScript/JSX.
+- Do NOT use import/export statements. React, useState, useEffect, useRef, useCallback, useMemo, useReducer, createContext, useContext, and Fragment are available as globals.
+- Since there are no imports, components from other files are available by their function name. Just define each component as a plain function (e.g. "function Header() { ... }") — no "export default", no "import".
+- The main/entry file MUST have "export default function AppName()" — this is the ONLY export in the entire codebase.
 - Tailwind CSS is loaded via CDN — use className with Tailwind utility classes freely.
 - For icons, use inline SVGs or emoji instead of importing icon libraries.
-- For state management, only use React.useState, React.useEffect, React.useRef etc.
-- Do NOT use Next.js-specific features (no next/link, next/image, next/router, next/navigation, "use client", etc.)
-- Do NOT use a tailwind.config object or configure Tailwind — it works out of the box via CDN.`;
+- Do NOT use Next.js-specific features (no next/link, next/image, next/router, "use client", etc.)
+- Do NOT configure Tailwind with a config object — it works out of the box via CDN.`;
 
 interface ParsedFile {
   path: string;
