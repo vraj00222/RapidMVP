@@ -31,6 +31,8 @@ import {
   Bot,
   Loader2,
   ArrowLeft,
+  ChevronDown,
+  Cpu,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarProfile } from "@/components/ui/profile-dropdown";
@@ -46,6 +48,16 @@ interface GeneratedFile {
   path: string;
   content: string;
   language: string;
+}
+
+interface AIModelOption {
+  id: string;
+  name: string;
+  provider: string;
+  tier: "fast" | "standard" | "premium";
+  description: string;
+  inputPrice: string;
+  outputPrice: string;
 }
 
 interface SidebarProject {
@@ -77,8 +89,12 @@ export default function ProjectChatPage() {
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
   const [copied, setCopied] = useState(false);
   const [generationError, setGenerationError] = useState("");
+  const [availableModels, setAvailableModels] = useState<AIModelOption[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -130,6 +146,36 @@ export default function ProjectChatPage() {
     }
   }, []);
 
+  // Load available AI models
+  useEffect(() => {
+    async function loadModels() {
+      try {
+        const res = await fetch("/api/models");
+        if (res.ok) {
+          const data = await res.json();
+          setAvailableModels(data.models || []);
+          if (data.models?.length > 0 && !selectedModelId) {
+            setSelectedModelId(data.models[0].id);
+          }
+        }
+      } catch {
+        // silently fail
+      }
+    }
+    loadModels();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close model picker on click outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+        setModelPickerOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   useEffect(() => {
     loadMessages();
     loadSidebarProjects();
@@ -158,7 +204,7 @@ export default function ProjectChatPage() {
       const res = await fetch(`/api/projects/${projectId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userContent }),
+        body: JSON.stringify({ message: userContent, modelId: selectedModelId || undefined }),
       });
 
       if (!res.ok) {
@@ -430,6 +476,89 @@ export default function ProjectChatPage() {
 
             {/* Input */}
             <div className="border-t border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              {/* Model Selector */}
+              {availableModels.length > 0 && (
+                <div className="mb-3 relative" ref={modelPickerRef}>
+                  <button
+                    type="button"
+                    onClick={() => setModelPickerOpen(!modelPickerOpen)}
+                    className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                  >
+                    <Cpu className="h-3.5 w-3.5" />
+                    {availableModels.find((m) => m.id === selectedModelId)?.name || "Select Model"}
+                    {(() => {
+                      const model = availableModels.find((m) => m.id === selectedModelId);
+                      if (!model) return null;
+                      const tierColors = {
+                        fast: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+                        standard: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+                        premium: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                      };
+                      return (
+                        <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tierColors[model.tier])}>
+                          {model.tier}
+                        </span>
+                      );
+                    })()}
+                    <ChevronDown className={cn("h-3 w-3 transition-transform", modelPickerOpen && "rotate-180")} />
+                  </button>
+
+                  {modelPickerOpen && (
+                    <div className="absolute bottom-full left-0 z-50 mb-1 w-[400px] rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                      <div className="border-b border-zinc-200 px-4 py-2 dark:border-zinc-700">
+                        <p className="text-xs font-semibold text-zinc-500">Select AI Model</p>
+                      </div>
+                      <div className="max-h-[320px] overflow-y-auto p-2">
+                        {availableModels.map((model) => {
+                          const tierColors = {
+                            fast: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+                            standard: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+                            premium: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                          };
+                          return (
+                            <button
+                              key={model.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedModelId(model.id);
+                                setModelPickerOpen(false);
+                              }}
+                              className={cn(
+                                "flex w-full items-start gap-3 rounded-lg p-3 text-left transition-colors",
+                                model.id === selectedModelId
+                                  ? "bg-violet-50 dark:bg-violet-950/30"
+                                  : "hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                              )}
+                            >
+                              <Cpu className="mt-0.5 h-4 w-4 shrink-0 text-zinc-400" />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-medium text-zinc-900 dark:text-white">
+                                    {model.name}
+                                  </span>
+                                  <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tierColors[model.tier])}>
+                                    {model.tier}
+                                  </span>
+                                </div>
+                                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                                  {model.description}
+                                </p>
+                                <p className="mt-1 text-[10px] text-zinc-400">
+                                  {model.inputPrice}/Mt in · {model.outputPrice}/Mt out · via {model.provider}
+                                </p>
+                              </div>
+                              {model.id === selectedModelId && (
+                                <Check className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <form onSubmit={handleSubmit} className="relative">
                 <Textarea
                   ref={textareaRef}
