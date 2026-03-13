@@ -42,39 +42,23 @@ interface Message {
   timestamp: string;
 }
 
+interface GeneratedFile {
+  path: string;
+  content: string;
+  language: string;
+}
+
 interface SidebarProject {
   _id: string;
   name: string;
   updatedAt: string;
 }
 
-const sampleCode = `import { useState } from 'react';
-
-export default function ProductCard({ product }) {
-  const [quantity, setQuantity] = useState(1);
-
-  return (
-    <div className="rounded-xl border p-6 shadow-sm">
-      <img
-        src={product.image}
-        alt={product.name}
-        className="aspect-square w-full rounded-lg object-cover"
-      />
-      <h3 className="mt-4 text-lg font-semibold">
-        {product.name}
-      </h3>
-      <p className="text-zinc-600">{product.description}</p>
-      <div className="mt-4 flex items-center justify-between">
-        <span className="text-2xl font-bold">
-          \${product.price}
-        </span>
-        <button className="rounded-lg bg-violet-600 px-4 py-2 text-white">
-          Add to Cart
-        </button>
-      </div>
-    </div>
-  );
-}`;
+function extractExplanation(content: string): string {
+  const idx = content.indexOf("---FILE:");
+  if (idx === -1) return content;
+  return content.substring(0, idx).trim();
+}
 
 export default function ProjectChatPage() {
   const params = useParams();
@@ -84,12 +68,15 @@ export default function ProjectChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [projectName, setProjectName] = useState("");
   const [sidebarProjects, setSidebarProjects] = useState<SidebarProject[]>([]);
+  const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
+  const [activeFileIndex, setActiveFileIndex] = useState(0);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
   const [copied, setCopied] = useState(false);
+  const [generationError, setGenerationError] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -101,16 +88,27 @@ export default function ProjectChatPage() {
     scrollToBottom();
   }, [messages]);
 
-  // Load chat history for this project
+  // Load chat history and files for this project
   const loadMessages = useCallback(async () => {
     try {
-      const res = await fetch(`/api/projects/${projectId}/messages`);
-      if (res.ok) {
-        const data = await res.json();
+      // Load messages
+      const msgRes = await fetch(`/api/projects/${projectId}/messages`);
+      if (msgRes.ok) {
+        const data = await msgRes.json();
         setMessages(data.messages || []);
         setProjectName(data.projectName || "");
-      } else if (res.status === 404) {
+      } else if (msgRes.status === 404) {
         router.push("/chat");
+        return;
+      }
+
+      // Load project files
+      const projRes = await fetch(`/api/projects/${projectId}`);
+      if (projRes.ok) {
+        const projData = await projRes.json();
+        if (projData.project.files?.length > 0) {
+          setGeneratedFiles(projData.project.files);
+        }
       }
     } catch {
       // silently fail
@@ -145,6 +143,8 @@ export default function ProjectChatPage() {
     setInput("");
     setIsLoading(true);
 
+    setGenerationError("");
+
     // Optimistically add user message to UI
     const optimisticUserMsg: Message = {
       role: "user",
@@ -153,36 +153,53 @@ export default function ProjectChatPage() {
     };
     setMessages((prev) => [...prev, optimisticUserMsg]);
 
-    // Save user message to DB
-    await fetch(`/api/projects/${projectId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role: "user", content: userContent }),
-    });
+    try {
+      // Call the generate API (saves messages + files to DB)
+      const res = await fetch(`/api/projects/${projectId}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: userContent }),
+      });
 
-    // Simulate AI response (will be replaced with real AI in Step 3)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (!res.ok) {
+        const errData = await res.json();
+        setGenerationError(errData.error || "Generation failed");
+        setIsLoading(false);
+        return;
+      }
 
-    const assistantContent = `I've created a ${userContent.toLowerCase().includes("product") ? "product card component" : "component"} based on your request. The code includes:\n\n• Responsive design with Tailwind CSS\n• Interactive hover states\n• Clean, maintainable code structure\n• TypeScript support\n\nYou can see the preview on the right, or switch to the Code tab to view and copy the source code.`;
+      const data = await res.json();
 
-    // Save assistant message to DB
-    await fetch(`/api/projects/${projectId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role: "assistant", content: assistantContent }),
-    });
+      // Show explanation in chat (not raw file content)
+      const assistantMsg: Message = {
+        role: "assistant",
+        content: data.explanation || data.fullResponse,
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
 
-    const assistantMsg: Message = {
-      role: "assistant",
-      content: assistantContent,
-      timestamp: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, assistantMsg]);
-    setIsLoading(false);
+      // Update generated files and switch to code tab
+      if (data.files && data.files.length > 0) {
+        setGeneratedFiles(data.files);
+        setActiveFileIndex(0);
+        setActiveTab("code");
+      }
+
+      // Refresh sidebar (project name may have changed)
+      loadSidebarProjects();
+    } catch {
+      setGenerationError("Something went wrong. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(sampleCode);
+    const content =
+      generatedFiles.length > 0
+        ? generatedFiles[activeFileIndex]?.content || ""
+        : "";
+    await navigator.clipboard.writeText(content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
   };
@@ -378,7 +395,9 @@ export default function ProjectChatPage() {
                         )}
                       >
                         <p className="whitespace-pre-wrap text-sm">
-                          {message.content}
+                          {message.role === "assistant"
+                            ? extractExplanation(message.content)
+                            : message.content}
                         </p>
                       </div>
                     </div>
@@ -397,6 +416,11 @@ export default function ProjectChatPage() {
                           <div className="h-2 w-2 animate-bounce rounded-full bg-violet-600" />
                         </div>
                       </div>
+                    </div>
+                  )}
+                  {generationError && (
+                    <div className="mx-auto max-w-[80%] rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400">
+                      {generationError}
                     </div>
                   )}
                   <div ref={messagesEndRef} />
@@ -519,8 +543,8 @@ export default function ProjectChatPage() {
                   )}
                 </div>
               ) : (
-                <div className="h-full overflow-auto">
-                  {messages.length === 0 ? (
+                <div className="flex h-full flex-col overflow-hidden">
+                  {generatedFiles.length === 0 ? (
                     <div className="flex h-full items-center justify-center">
                       <div className="text-center">
                         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-zinc-200 dark:bg-zinc-800">
@@ -532,31 +556,55 @@ export default function ProjectChatPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="relative">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="absolute right-4 top-4 gap-2"
-                        onClick={handleCopy}
-                      >
-                        {copied ? (
-                          <>
-                            <Check className="h-4 w-4" />
-                            Copied!
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="h-4 w-4" />
-                            Copy
-                          </>
-                        )}
-                      </Button>
-                      <pre className="overflow-auto p-6 text-sm">
-                        <code className="language-tsx text-zinc-800 dark:text-zinc-200">
-                          {sampleCode}
+                    <>
+                      {/* File tabs */}
+                      <div className="flex items-center gap-0 overflow-x-auto border-b border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800">
+                        {generatedFiles.map((file, i) => (
+                          <button
+                            key={file.path}
+                            onClick={() => setActiveFileIndex(i)}
+                            className={cn(
+                              "shrink-0 border-r border-zinc-200 px-4 py-2 text-xs font-medium transition-colors dark:border-zinc-700",
+                              i === activeFileIndex
+                                ? "bg-white text-zinc-900 dark:bg-zinc-900 dark:text-white"
+                                : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-700"
+                            )}
+                          >
+                            {file.path.split("/").pop()}
+                          </button>
+                        ))}
+                      </div>
+                      {/* File path */}
+                      <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-4 py-1 dark:border-zinc-700 dark:bg-zinc-800">
+                        <span className="text-xs text-zinc-400">
+                          {generatedFiles[activeFileIndex]?.path}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1 text-xs"
+                          onClick={handleCopy}
+                        >
+                          {copied ? (
+                            <>
+                              <Check className="h-3 w-3" />
+                              Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" />
+                              Copy
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      {/* Code content */}
+                      <pre className="flex-1 overflow-auto p-4 text-sm">
+                        <code className="text-zinc-800 dark:text-zinc-200">
+                          {generatedFiles[activeFileIndex]?.content}
                         </code>
                       </pre>
-                    </div>
+                    </>
                   )}
                 </div>
               )}
