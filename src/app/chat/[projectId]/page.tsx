@@ -35,6 +35,7 @@ import {
   Cpu,
   ExternalLink,
 } from "lucide-react";
+import { Highlight, themes } from "prism-react-renderer";
 import { cn } from "@/lib/utils";
 import { SidebarProfile } from "@/components/ui/profile-dropdown";
 
@@ -839,12 +840,34 @@ export default function ProjectChatPage() {
                           )}
                         </Button>
                       </div>
-                      {/* Code content */}
-                      <pre className="flex-1 overflow-auto p-4 text-sm">
-                        <code className="text-zinc-800 dark:text-zinc-200">
-                          {generatedFiles[activeFileIndex]?.content}
-                        </code>
-                      </pre>
+                      {/* Code content with syntax highlighting */}
+                      <div className="flex-1 overflow-auto">
+                        <Highlight
+                          theme={themes.vsDark}
+                          code={generatedFiles[activeFileIndex]?.content || ""}
+                          language={generatedFiles[activeFileIndex]?.language === "typescript" ? "tsx" : generatedFiles[activeFileIndex]?.language || "text"}
+                        >
+                          {({ style, tokens, getLineProps, getTokenProps }) => (
+                            <pre
+                              className="min-h-full p-4 text-sm leading-relaxed"
+                              style={{ ...style, margin: 0, background: "#1e1e2e" }}
+                            >
+                              {tokens.map((line, i) => (
+                                <div key={i} {...getLineProps({ line })} className="table-row">
+                                  <span className="table-cell select-none pr-4 text-right text-xs text-zinc-600">
+                                    {i + 1}
+                                  </span>
+                                  <span className="table-cell whitespace-pre-wrap break-all">
+                                    {line.map((token, key) => (
+                                      <span key={key} {...getTokenProps({ token })} />
+                                    ))}
+                                  </span>
+                                </div>
+                              ))}
+                            </pre>
+                          )}
+                        </Highlight>
+                      </div>
                     </>
                   )}
                 </div>
