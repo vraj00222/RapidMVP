@@ -207,7 +207,10 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
   // Escape closing script tags and backticks in generated code
   const safeCode = allCode.replace(/<\/script>/gi, "<\\/script>");
 
-  const SC = "</" + "script>"; // avoid template literal parsing issues
+  const SC = "</" + "script>";
+
+  // Escape backticks and ${} in generated code so it doesn't break the template
+  const escapedCode = safeCode.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -215,8 +218,8 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <script src="https://cdn.tailwindcss.com">${SC}
-  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin>${SC}
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin>${SC}
+  <script src="https://unpkg.com/react@18/umd/react.development.js">${SC}
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js">${SC}
   <script src="https://unpkg.com/@babel/standalone/babel.min.js">${SC}
   <style>
     body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
@@ -227,31 +230,46 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
 <body>
   <div id="root"></div>
   <script>
-    window.onerror = function(msg, url, line) {
+    function showError(title, msg) {
       var root = document.getElementById("root");
-      if (root && !root.querySelector("[data-error]")) {
-        var el = document.createElement("div");
-        el.setAttribute("data-error", "1");
-        el.style.cssText = "padding:32px;color:#ef4444;font-family:monospace;font-size:14px;white-space:pre-wrap";
-        el.textContent = "Preview Error:\\n" + msg + (line ? "\\nLine " + line : "");
-        root.innerHTML = "";
-        root.appendChild(el);
-      }
-    };
-  ${SC}
-  <script type="text/babel" data-presets="react">
-    const { useState, useEffect, useRef, useCallback, useMemo, useReducer, createContext, useContext, Fragment } = React;
-
-    ${safeCode}
-
-    try {
-      const root = ReactDOM.createRoot(document.getElementById("root"));
-      root.render(React.createElement(${componentName}));
-    } catch (err) {
-      document.getElementById("root").innerHTML =
-        '<div style="padding:32px;color:#ef4444;font-family:monospace;font-size:14px;white-space:pre-wrap">' +
-        '<strong>Render Error:</strong>\\n' + err.message + '</div>';
+      root.innerHTML = '<div style="padding:24px;font-family:monospace;font-size:13px;white-space:pre-wrap">' +
+        '<div style="color:#ef4444;font-weight:bold;margin-bottom:8px">' + title + '</div>' +
+        '<div style="color:#a1a1aa">' + msg + '</div></div>';
     }
+
+    // Wait for Babel to load, then compile + run manually
+    // This avoids cross-origin "Script error." from type="text/babel"
+    function boot() {
+      if (typeof Babel === "undefined") {
+        showError("Loading Error", "Babel failed to load. Check your internet connection.");
+        return;
+      }
+
+      var jsxCode = ${JSON.stringify(
+    `const { useState, useEffect, useRef, useCallback, useMemo, useReducer, createContext, useContext, Fragment } = React;\n\n${safeCode}\n\ntry {\n  const root = ReactDOM.createRoot(document.getElementById("root"));\n  root.render(React.createElement(${componentName}));\n} catch (err) {\n  document.getElementById("root").innerHTML = '<div style=\"padding:32px;color:#ef4444;font-family:monospace\">' + err.message + '</div>';\n}`
+  )};
+
+      try {
+        var output = Babel.transform(jsxCode, { presets: ["react"] });
+        var fn = new Function(output.code);
+        fn();
+      } catch (err) {
+        showError("Compile/Render Error:", err.message);
+      }
+    }
+
+    // Babel loads async, poll until ready
+    var attempts = 0;
+    var timer = setInterval(function() {
+      attempts++;
+      if (typeof Babel !== "undefined") {
+        clearInterval(timer);
+        boot();
+      } else if (attempts > 50) {
+        clearInterval(timer);
+        showError("Timeout", "Babel did not load after 5 seconds.");
+      }
+    }, 100);
   ${SC}
 </body>
 </html>`;
