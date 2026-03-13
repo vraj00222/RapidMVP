@@ -31,7 +31,11 @@ import {
   Bot,
   Loader2,
   ArrowLeft,
+  ChevronDown,
+  Cpu,
+  ExternalLink,
 } from "lucide-react";
+import { Highlight, themes } from "prism-react-renderer";
 import { cn } from "@/lib/utils";
 import { SidebarProfile } from "@/components/ui/profile-dropdown";
 
@@ -42,39 +46,106 @@ interface Message {
   timestamp: string;
 }
 
+interface GeneratedFile {
+  path: string;
+  content: string;
+  language: string;
+}
+
+interface AIModelOption {
+  id: string;
+  name: string;
+  provider: string;
+  tier: "fast" | "standard" | "premium";
+  description: string;
+  inputPrice: string;
+  outputPrice: string;
+}
+
 interface SidebarProject {
   _id: string;
   name: string;
   updatedAt: string;
 }
 
-const sampleCode = `import { useState } from 'react';
+function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+}
 
-export default function ProductCard({ product }) {
-  const [quantity, setQuantity] = useState(1);
+function extractExplanation(content: string): string {
+  const cleaned = stripThinkTags(content);
+  const idx = cleaned.indexOf("---FILE:");
+  if (idx === -1) return cleaned;
+  return cleaned.substring(0, idx).trim();
+}
+
+const LOADING_WORDS = [
+  "Thinking",
+  "Crafting",
+  "Designing",
+  "Architecting",
+  "Building",
+  "Assembling",
+  "Composing",
+  "Sculpting",
+  "Weaving",
+  "Conjuring",
+  "Tinkering",
+  "Forging",
+  "Dreaming up",
+  "Cooking up",
+  "Spinning up",
+  "Orchestrating",
+];
+
+function LoadingIndicator() {
+  const [wordIndex, setWordIndex] = useState(0);
+  const [dots, setDots] = useState("");
+
+  useEffect(() => {
+    const wordInterval = setInterval(() => {
+      setWordIndex((prev) => (prev + 1) % LOADING_WORDS.length);
+    }, 2400);
+    return () => clearInterval(wordInterval);
+  }, []);
+
+  useEffect(() => {
+    const dotInterval = setInterval(() => {
+      setDots((prev) => (prev.length >= 3 ? "" : prev + "."));
+    }, 500);
+    return () => clearInterval(dotInterval);
+  }, []);
 
   return (
-    <div className="rounded-xl border p-6 shadow-sm">
-      <img
-        src={product.image}
-        alt={product.name}
-        className="aspect-square w-full rounded-lg object-cover"
-      />
-      <h3 className="mt-4 text-lg font-semibold">
-        {product.name}
-      </h3>
-      <p className="text-zinc-600">{product.description}</p>
-      <div className="mt-4 flex items-center justify-between">
-        <span className="text-2xl font-bold">
-          \${product.price}
-        </span>
-        <button className="rounded-lg bg-violet-600 px-4 py-2 text-white">
-          Add to Cart
-        </button>
+    <div className="flex gap-4">
+      <Avatar className="h-8 w-8 shrink-0">
+        <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white">
+          <Bot className="h-4 w-4" />
+        </AvatarFallback>
+      </Avatar>
+      <div className="rounded-2xl bg-white px-4 py-3 shadow-sm dark:bg-zinc-800">
+        <div className="flex items-center gap-3">
+          <div className="relative h-5 w-5">
+            <div className="absolute inset-0 animate-spin rounded-full border-2 border-violet-200 border-t-violet-600" />
+          </div>
+          <AnimatePresence mode="wait">
+            <motion.span
+              key={wordIndex}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.2 }}
+              className="text-sm font-medium text-zinc-600 dark:text-zinc-300"
+            >
+              {LOADING_WORDS[wordIndex]}
+              <span className="inline-block w-5 text-left">{dots}</span>
+            </motion.span>
+          </AnimatePresence>
+        </div>
       </div>
     </div>
   );
-}`;
+}
 
 export default function ProjectChatPage() {
   const params = useParams();
@@ -84,14 +155,25 @@ export default function ProjectChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [projectName, setProjectName] = useState("");
   const [sidebarProjects, setSidebarProjects] = useState<SidebarProject[]>([]);
+  const [generatedFiles, setGeneratedFiles] = useState<GeneratedFile[]>([]);
+  const [activeFileIndex, setActiveFileIndex] = useState(0);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(true);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
   const [copied, setCopied] = useState(false);
+  const [generationError, setGenerationError] = useState("");
+  const [previewKey, setPreviewKey] = useState(0);
+  const [availableModels, setAvailableModels] = useState<AIModelOption[]>([]);
+  const [selectedModelId, setSelectedModelId] = useState<string>("");
+  const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [chatWidth, setChatWidth] = useState(50); // percentage
+  const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const modelPickerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -101,16 +183,61 @@ export default function ProjectChatPage() {
     scrollToBottom();
   }, [messages]);
 
-  // Load chat history for this project
+  // Resizable panel drag handler
+  useEffect(() => {
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const pct = ((e.clientX - rect.left) / rect.width) * 100;
+      setChatWidth(Math.min(80, Math.max(20, pct)));
+    };
+
+    const handleMouseUp = () => setIsDragging(false);
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    // Prevent text selection while dragging
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [isDragging]);
+
+  // Refresh preview whenever files change
+  useEffect(() => {
+    if (generatedFiles.length > 0) {
+      setPreviewKey((k) => k + 1);
+    }
+  }, [generatedFiles]);
+
+  // Load chat history and files for this project
   const loadMessages = useCallback(async () => {
     try {
-      const res = await fetch(`/api/projects/${projectId}/messages`);
-      if (res.ok) {
-        const data = await res.json();
+      // Load messages
+      const msgRes = await fetch(`/api/projects/${projectId}/messages`);
+      if (msgRes.ok) {
+        const data = await msgRes.json();
         setMessages(data.messages || []);
         setProjectName(data.projectName || "");
-      } else if (res.status === 404) {
+      } else if (msgRes.status === 404) {
         router.push("/chat");
+        return;
+      }
+
+      // Load project files
+      const projRes = await fetch(`/api/projects/${projectId}`);
+      if (projRes.ok) {
+        const projData = await projRes.json();
+        if (projData.project.files?.length > 0) {
+          setGeneratedFiles(projData.project.files);
+        }
       }
     } catch {
       // silently fail
@@ -132,6 +259,36 @@ export default function ProjectChatPage() {
     }
   }, []);
 
+  // Load available AI models
+  useEffect(() => {
+    async function loadModels() {
+      try {
+        const res = await fetch("/api/models");
+        if (res.ok) {
+          const data = await res.json();
+          setAvailableModels(data.models || []);
+          if (data.models?.length > 0 && !selectedModelId) {
+            setSelectedModelId(data.models[0].id);
+          }
+        }
+      } catch {
+        // silently fail
+      }
+    }
+    loadModels();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Close model picker on click outside
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (modelPickerRef.current && !modelPickerRef.current.contains(e.target as Node)) {
+        setModelPickerOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
   useEffect(() => {
     loadMessages();
     loadSidebarProjects();
@@ -145,6 +302,8 @@ export default function ProjectChatPage() {
     setInput("");
     setIsLoading(true);
 
+    setGenerationError("");
+
     // Optimistically add user message to UI
     const optimisticUserMsg: Message = {
       role: "user",
@@ -153,38 +312,60 @@ export default function ProjectChatPage() {
     };
     setMessages((prev) => [...prev, optimisticUserMsg]);
 
-    // Save user message to DB
-    await fetch(`/api/projects/${projectId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role: "user", content: userContent }),
-    });
+    try {
+      // Call the generate API (saves messages + files to DB)
+      const res = await fetch(`/api/projects/${projectId}/generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: userContent, modelId: selectedModelId || undefined }),
+      });
 
-    // Simulate AI response (will be replaced with real AI in Step 3)
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+      if (!res.ok) {
+        const errData = await res.json();
+        setGenerationError(errData.error || "Generation failed");
+        setIsLoading(false);
+        return;
+      }
 
-    const assistantContent = `I've created a ${userContent.toLowerCase().includes("product") ? "product card component" : "component"} based on your request. The code includes:\n\n• Responsive design with Tailwind CSS\n• Interactive hover states\n• Clean, maintainable code structure\n• TypeScript support\n\nYou can see the preview on the right, or switch to the Code tab to view and copy the source code.`;
+      const data = await res.json();
 
-    // Save assistant message to DB
-    await fetch(`/api/projects/${projectId}/messages`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ role: "assistant", content: assistantContent }),
-    });
+      // Show explanation in chat (not raw file content)
+      const assistantMsg: Message = {
+        role: "assistant",
+        content: data.explanation || data.fullResponse,
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, assistantMsg]);
 
-    const assistantMsg: Message = {
-      role: "assistant",
-      content: assistantContent,
-      timestamp: new Date().toISOString(),
-    };
-    setMessages((prev) => [...prev, assistantMsg]);
-    setIsLoading(false);
+      // Update generated files and switch to code tab
+      if (data.files && data.files.length > 0) {
+        setGeneratedFiles(data.files);
+        setActiveFileIndex(0);
+        setActiveTab("code");
+      }
+
+      // Refresh sidebar (project name may have changed)
+      loadSidebarProjects();
+    } catch {
+      setGenerationError("Something went wrong. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   const handleCopy = async () => {
-    await navigator.clipboard.writeText(sampleCode);
+    const content =
+      generatedFiles.length > 0
+        ? generatedFiles[activeFileIndex]?.content || ""
+        : "";
+    await navigator.clipboard.writeText(content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleOpenPreviewTab = () => {
+    if (generatedFiles.length === 0) return;
+    window.open(`/api/preview/${projectId}`, "_blank");
   };
 
   const handleNewChat = async () => {
@@ -327,9 +508,9 @@ export default function ProjectChatPage() {
         </header>
 
         {/* Chat + Preview */}
-        <div className="flex flex-1 overflow-hidden">
+        <div ref={containerRef} className="flex flex-1 overflow-hidden">
           {/* Chat Area */}
-          <div className="flex w-1/2 flex-col border-r border-zinc-200 dark:border-zinc-800">
+          <div className="flex flex-col" style={{ width: `${chatWidth}%` }}>
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-6">
               {messages.length === 0 ? (
@@ -378,25 +559,17 @@ export default function ProjectChatPage() {
                         )}
                       >
                         <p className="whitespace-pre-wrap text-sm">
-                          {message.content}
+                          {message.role === "assistant"
+                            ? extractExplanation(message.content)
+                            : message.content}
                         </p>
                       </div>
                     </div>
                   ))}
-                  {isLoading && (
-                    <div className="flex gap-4">
-                      <Avatar className="h-8 w-8 shrink-0">
-                        <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white">
-                          <Bot className="h-4 w-4" />
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="rounded-2xl bg-white px-4 py-3 shadow-sm dark:bg-zinc-800">
-                        <div className="flex items-center gap-2">
-                          <div className="h-2 w-2 animate-bounce rounded-full bg-violet-600 [animation-delay:-0.3s]" />
-                          <div className="h-2 w-2 animate-bounce rounded-full bg-violet-600 [animation-delay:-0.15s]" />
-                          <div className="h-2 w-2 animate-bounce rounded-full bg-violet-600" />
-                        </div>
-                      </div>
+                  {isLoading && <LoadingIndicator />}
+                  {generationError && (
+                    <div className="mx-auto max-w-[80%] rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400">
+                      {generationError}
                     </div>
                   )}
                   <div ref={messagesEndRef} />
@@ -406,6 +579,89 @@ export default function ProjectChatPage() {
 
             {/* Input */}
             <div className="border-t border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              {/* Model Selector */}
+              {availableModels.length > 0 && (
+                <div className="mb-3 relative" ref={modelPickerRef}>
+                  <button
+                    type="button"
+                    onClick={() => setModelPickerOpen(!modelPickerOpen)}
+                    className="flex items-center gap-2 rounded-lg border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                  >
+                    <Cpu className="h-3.5 w-3.5" />
+                    {availableModels.find((m) => m.id === selectedModelId)?.name || "Select Model"}
+                    {(() => {
+                      const model = availableModels.find((m) => m.id === selectedModelId);
+                      if (!model) return null;
+                      const tierColors = {
+                        fast: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+                        standard: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+                        premium: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                      };
+                      return (
+                        <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tierColors[model.tier])}>
+                          {model.tier}
+                        </span>
+                      );
+                    })()}
+                    <ChevronDown className={cn("h-3 w-3 transition-transform", modelPickerOpen && "rotate-180")} />
+                  </button>
+
+                  {modelPickerOpen && (
+                    <div className="absolute bottom-full left-0 z-50 mb-1 w-[400px] rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-700 dark:bg-zinc-900">
+                      <div className="border-b border-zinc-200 px-4 py-2 dark:border-zinc-700">
+                        <p className="text-xs font-semibold text-zinc-500">Select AI Model</p>
+                      </div>
+                      <div className="max-h-[320px] overflow-y-auto p-2">
+                        {availableModels.map((model) => {
+                          const tierColors = {
+                            fast: "bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400",
+                            standard: "bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400",
+                            premium: "bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400",
+                          };
+                          return (
+                            <button
+                              key={model.id}
+                              type="button"
+                              onClick={() => {
+                                setSelectedModelId(model.id);
+                                setModelPickerOpen(false);
+                              }}
+                              className={cn(
+                                "flex w-full items-start gap-3 rounded-lg p-3 text-left transition-colors",
+                                model.id === selectedModelId
+                                  ? "bg-violet-50 dark:bg-violet-950/30"
+                                  : "hover:bg-zinc-50 dark:hover:bg-zinc-800"
+                              )}
+                            >
+                              <Cpu className="mt-0.5 h-4 w-4 shrink-0 text-zinc-400" />
+                              <div className="flex-1 min-w-0">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-sm font-medium text-zinc-900 dark:text-white">
+                                    {model.name}
+                                  </span>
+                                  <span className={cn("rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase", tierColors[model.tier])}>
+                                    {model.tier}
+                                  </span>
+                                </div>
+                                <p className="mt-0.5 text-xs text-zinc-500 dark:text-zinc-400">
+                                  {model.description}
+                                </p>
+                                <p className="mt-1 text-[10px] text-zinc-400">
+                                  {model.inputPrice}/Mt in · {model.outputPrice}/Mt out · via {model.provider}
+                                </p>
+                              </div>
+                              {model.id === selectedModelId && (
+                                <Check className="mt-0.5 h-4 w-4 shrink-0 text-violet-600" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <form onSubmit={handleSubmit} className="relative">
                 <Textarea
                   ref={textareaRef}
@@ -435,8 +691,17 @@ export default function ProjectChatPage() {
             </div>
           </div>
 
+          {/* Drag handle */}
+          <div
+            className="group relative w-1 shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-violet-400 dark:bg-zinc-700 dark:hover:bg-violet-500"
+            onMouseDown={() => setIsDragging(true)}
+          >
+            <div className="absolute inset-y-0 -left-1 -right-1 z-10" />
+            <div className="absolute left-1/2 top-1/2 h-8 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-zinc-400 opacity-0 transition-opacity group-hover:opacity-100 dark:bg-zinc-500" />
+          </div>
+
           {/* Preview Area */}
-          <div className="flex w-1/2 flex-col bg-zinc-100 dark:bg-zinc-900">
+          <div className="flex flex-1 flex-col overflow-hidden bg-zinc-100 dark:bg-zinc-900">
             {/* Tabs */}
             <div className="flex items-center justify-between border-b border-zinc-200 bg-white px-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex">
@@ -466,11 +731,14 @@ export default function ProjectChatPage() {
                 </button>
               </div>
               <div className="flex items-center gap-1">
-                <Button variant="ghost" size="icon">
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-                <Button variant="ghost" size="icon">
-                  <Maximize2 className="h-4 w-4" />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleOpenPreviewTab}
+                  disabled={generatedFiles.length === 0}
+                  title="Open in new tab"
+                >
+                  <ExternalLink className="h-4 w-4" />
                 </Button>
               </div>
             </div>
@@ -478,49 +746,47 @@ export default function ProjectChatPage() {
             {/* Content */}
             <div className="flex-1 overflow-hidden">
               {activeTab === "preview" ? (
-                <div className="flex h-full items-center justify-center p-8">
-                  {messages.length === 0 ? (
-                    <div className="text-center">
-                      <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-zinc-200 dark:bg-zinc-800">
-                        <FolderTree className="h-8 w-8 text-zinc-400" />
+                <div className="flex h-full flex-col">
+                  {generatedFiles.length === 0 ? (
+                    <div className="flex h-full items-center justify-center p-8">
+                      <div className="text-center">
+                        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-zinc-200 dark:bg-zinc-800">
+                          <FolderTree className="h-8 w-8 text-zinc-400" />
+                        </div>
+                        <p className="mt-4 text-sm text-zinc-500">
+                          Your preview will appear here
+                        </p>
+                        <p className="mt-1 text-xs text-zinc-400">
+                          Describe what you want to build and see it rendered live
+                        </p>
                       </div>
-                      <p className="mt-4 text-sm text-zinc-500">
-                        Your preview will appear here
-                      </p>
                     </div>
                   ) : (
-                    <div className="h-full w-full overflow-hidden rounded-xl border border-zinc-200 bg-white shadow-lg dark:border-zinc-700 dark:bg-zinc-800">
-                      <div className="flex h-10 items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 dark:border-zinc-700 dark:bg-zinc-900">
+                    <div className="flex h-full flex-col">
+                      {/* Browser chrome */}
+                      <div className="flex h-10 items-center gap-2 border-b border-zinc-200 bg-zinc-50 px-4 dark:border-zinc-700 dark:bg-zinc-800">
                         <div className="flex gap-1.5">
                           <div className="h-3 w-3 rounded-full bg-red-400" />
                           <div className="h-3 w-3 rounded-full bg-yellow-400" />
                           <div className="h-3 w-3 rounded-full bg-green-400" />
                         </div>
-                        <div className="ml-4 flex-1 rounded-md bg-white px-3 py-1 text-xs text-zinc-500 dark:bg-zinc-800">
-                          localhost:3000
+                        <div className="ml-4 flex-1 rounded-md bg-white px-3 py-1 text-xs text-zinc-500 dark:bg-zinc-900">
+                          preview://localhost
                         </div>
                       </div>
-                      <div className="p-8">
-                        <div className="mx-auto max-w-xs rounded-xl border border-zinc-200 p-6 shadow-sm dark:border-zinc-700">
-                          <div className="aspect-square rounded-lg bg-gradient-to-br from-violet-100 to-indigo-100 dark:from-violet-900/20 dark:to-indigo-900/20" />
-                          <h3 className="mt-4 text-lg font-semibold">
-                            Product Name
-                          </h3>
-                          <p className="text-sm text-zinc-600 dark:text-zinc-400">
-                            A brief description of the product
-                          </p>
-                          <div className="mt-4 flex items-center justify-between">
-                            <span className="text-2xl font-bold">$99</span>
-                            <Button size="sm">Add to Cart</Button>
-                          </div>
-                        </div>
-                      </div>
+                      {/* Live iframe preview — served from same-origin API route */}
+                      <iframe
+                        key={previewKey}
+                        src={`/api/preview/${projectId}`}
+                        className="flex-1 w-full bg-white"
+                        title="Live Preview"
+                      />
                     </div>
                   )}
                 </div>
               ) : (
-                <div className="h-full overflow-auto">
-                  {messages.length === 0 ? (
+                <div className="flex h-full flex-col overflow-hidden">
+                  {generatedFiles.length === 0 ? (
                     <div className="flex h-full items-center justify-center">
                       <div className="text-center">
                         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-xl bg-zinc-200 dark:bg-zinc-800">
@@ -532,31 +798,77 @@ export default function ProjectChatPage() {
                       </div>
                     </div>
                   ) : (
-                    <div className="relative">
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        className="absolute right-4 top-4 gap-2"
-                        onClick={handleCopy}
-                      >
-                        {copied ? (
-                          <>
-                            <Check className="h-4 w-4" />
-                            Copied!
-                          </>
-                        ) : (
-                          <>
-                            <Copy className="h-4 w-4" />
-                            Copy
-                          </>
-                        )}
-                      </Button>
-                      <pre className="overflow-auto p-6 text-sm">
-                        <code className="language-tsx text-zinc-800 dark:text-zinc-200">
-                          {sampleCode}
-                        </code>
-                      </pre>
-                    </div>
+                    <>
+                      {/* File tabs */}
+                      <div className="flex items-center gap-0 overflow-x-auto border-b border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800">
+                        {generatedFiles.map((file, i) => (
+                          <button
+                            key={file.path}
+                            onClick={() => setActiveFileIndex(i)}
+                            className={cn(
+                              "shrink-0 border-r border-zinc-200 px-4 py-2 text-xs font-medium transition-colors dark:border-zinc-700",
+                              i === activeFileIndex
+                                ? "bg-white text-zinc-900 dark:bg-zinc-900 dark:text-white"
+                                : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-700"
+                            )}
+                          >
+                            {file.path.split("/").pop()}
+                          </button>
+                        ))}
+                      </div>
+                      {/* File path */}
+                      <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-4 py-1 dark:border-zinc-700 dark:bg-zinc-800">
+                        <span className="text-xs text-zinc-400">
+                          {generatedFiles[activeFileIndex]?.path}
+                        </span>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className="h-7 gap-1 text-xs"
+                          onClick={handleCopy}
+                        >
+                          {copied ? (
+                            <>
+                              <Check className="h-3 w-3" />
+                              Copied
+                            </>
+                          ) : (
+                            <>
+                              <Copy className="h-3 w-3" />
+                              Copy
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                      {/* Code content with syntax highlighting */}
+                      <div className="flex-1 overflow-auto">
+                        <Highlight
+                          theme={themes.vsDark}
+                          code={generatedFiles[activeFileIndex]?.content || ""}
+                          language={generatedFiles[activeFileIndex]?.language === "typescript" ? "tsx" : generatedFiles[activeFileIndex]?.language || "text"}
+                        >
+                          {({ style, tokens, getLineProps, getTokenProps }) => (
+                            <pre
+                              className="min-h-full p-4 text-sm leading-relaxed"
+                              style={{ ...style, margin: 0, background: "#1e1e2e" }}
+                            >
+                              {tokens.map((line, i) => (
+                                <div key={i} {...getLineProps({ line })} className="table-row">
+                                  <span className="table-cell select-none pr-4 text-right text-xs text-zinc-600">
+                                    {i + 1}
+                                  </span>
+                                  <span className="table-cell whitespace-pre-wrap break-all">
+                                    {line.map((token, key) => (
+                                      <span key={key} {...getTokenProps({ token })} />
+                                    ))}
+                                  </span>
+                                </div>
+                              ))}
+                            </pre>
+                          )}
+                        </Highlight>
+                      </div>
+                    </>
                   )}
                 </div>
               )}
