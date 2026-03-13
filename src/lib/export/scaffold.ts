@@ -14,6 +14,31 @@ interface ScaffoldFile {
   content: string;
 }
 
+/** Check if file content contains JSX syntax */
+function containsJSX(content: string): boolean {
+  // Look for JSX tags: <Component, <div, </div>, self-closing <X />
+  return /<[A-Za-z][A-Za-z0-9]*[\s/>]/.test(content) || /<\/[A-Za-z]/.test(content);
+}
+
+/** Ensure file has a .jsx/.tsx extension if it contains JSX */
+function ensureJSXExtension(filePath: string, content: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase();
+  if (ext === "js" && containsJSX(content)) return filePath.replace(/\.js$/, ".jsx");
+  if (ext === "ts" && containsJSX(content)) return filePath.replace(/\.ts$/, ".tsx");
+  return filePath;
+}
+
+/** Extract all top-level component function names from code */
+function extractComponentNames(content: string): string[] {
+  const names: string[] = [];
+  const regex = /^(?:export\s+default\s+)?function\s+([A-Z]\w*)/gm;
+  let match;
+  while ((match = regex.exec(content)) !== null) {
+    names.push(match[1]);
+  }
+  return names;
+}
+
 export function scaffoldProject(
   projectName: string,
   files: GeneratedFile[]
@@ -127,12 +152,28 @@ body {
 `,
   });
 
-  // Find the main entry component
+  // --- Pre-process: build a map of component name → corrected file path ---
   const mainFile = findMainFile(files);
   const mainComponentName = extractComponentName(mainFile);
 
-  // Determine the main file's src path
-  const mainSrcPath = toSrcPath(mainFile.path);
+  // Map each file to its corrected src path (with .jsx/.tsx extension)
+  const filePathMap = new Map<GeneratedFile, string>();
+  // Map component names to their import path (relative from src/)
+  const componentImportMap = new Map<string, string>();
+
+  for (const file of files) {
+    const srcPath = toSrcPath(file.path);
+    const correctedPath = ensureJSXExtension(srcPath, file.content);
+    filePathMap.set(file, correctedPath);
+
+    // Register all component names from this file
+    const names = extractComponentNames(file.content);
+    for (const name of names) {
+      componentImportMap.set(name, correctedPath);
+    }
+  }
+
+  const mainSrcPath = filePathMap.get(mainFile)!;
 
   // src/main.jsx — entry point
   output.push({
@@ -152,61 +193,89 @@ ReactDOM.createRoot(document.getElementById("root")).render(
 
   // Add all generated files under src/
   for (const file of files) {
-    const srcPath = toSrcPath(file.path);
+    const correctedPath = filePathMap.get(file)!;
     let content = file.content;
 
-    // Add React import if the file uses JSX and doesn't already import React
-    if (
-      (file.language === "javascript" || file.language === "typescript") &&
-      !content.includes("import React")
-    ) {
-      const needsReact = content.includes("<") && content.includes("/>");
-      const needsHooks = /\b(useState|useEffect|useRef|useCallback|useMemo|useReducer|useContext|createContext|Fragment)\b/.test(content);
-
-      if (needsReact || needsHooks) {
-        const hooks = [
-          "useState",
-          "useEffect",
-          "useRef",
-          "useCallback",
-          "useMemo",
-          "useReducer",
-          "useContext",
-          "createContext",
-          "Fragment",
-        ].filter((h) => content.includes(h));
-
-        const hookImport =
-          hooks.length > 0
-            ? `import React, { ${hooks.join(", ")} } from "react";\n`
-            : `import React from "react";\n`;
-
-        content = hookImport + content;
+    // --- Build import statements for components used in this file ---
+    // Find component references: <ComponentName or ComponentName(
+    const usedComponents = new Set<string>();
+    const componentRefRegex = /\b([A-Z][A-Za-z0-9]*)\b/g;
+    let refMatch;
+    while ((refMatch = componentRefRegex.exec(content)) !== null) {
+      const name = refMatch[1];
+      // Skip: React built-ins, the component's own name, HTML-like names
+      if (
+        ["React", "Fragment", "StrictMode", "Suspense", "Component", "Promise", "Error", "Array", "Object", "String", "Number", "Boolean", "Map", "Set", "Date", "JSON", "Math", "RegExp", "URL", "FormData", "Response", "Request"].includes(name)
+      ) continue;
+      // Skip if it's defined in this file
+      const ownNames = extractComponentNames(content);
+      if (ownNames.includes(name)) continue;
+      // Only add if we know which file it comes from
+      if (componentImportMap.has(name)) {
+        usedComponents.add(name);
       }
     }
 
-    // Ensure the main component has export default
-    if (file === mainFile && !content.includes("export default")) {
-      content = content.replace(
-        new RegExp(`^(function\\s+${mainComponentName})`, "m"),
-        `export default $1`
-      );
+    // Remove existing import/export statements (AI generates these for browser preview)
+    content = content
+      .replace(/^import\s[\s\S]*?from\s+['"][^'"]+['"];?\s*$/gm, "")
+      .replace(/^import\s+['"][^'"]+['"];?\s*$/gm, "");
+
+    // Add React import
+    const hooks = [
+      "useState", "useEffect", "useRef", "useCallback",
+      "useMemo", "useReducer", "useContext", "createContext", "Fragment",
+    ].filter((h) => content.includes(h));
+
+    const reactImport = hooks.length > 0
+      ? `import React, { ${hooks.join(", ")} } from "react";`
+      : `import React from "react";`;
+
+    // Build import lines for other components
+    const importLines: string[] = [reactImport];
+    for (const compName of usedComponents) {
+      const compPath = componentImportMap.get(compName)!;
+      // Compute relative path from this file's directory
+      const fromDir = correctedPath.includes("/")
+        ? correctedPath.substring(0, correctedPath.lastIndexOf("/"))
+        : "";
+      const toPath = stripExtension(compPath);
+      const relativePath = fromDir === ""
+        ? `./${toPath}`
+        : computeRelativePath(fromDir, toPath);
+      importLines.push(`import ${compName} from "${relativePath}";`);
     }
 
-    // For non-main files, ensure they have export default if they define a component
-    if (file !== mainFile && !content.includes("export")) {
-      const funcMatch = content.match(/^function\s+([A-Z]\w*)/m);
-      if (funcMatch) {
+    // Ensure main component has export default
+    if (file === mainFile) {
+      if (!content.includes("export default")) {
         content = content.replace(
-          new RegExp(`^(function\\s+${funcMatch[1]})`, "m"),
+          new RegExp(`^(function\\s+${mainComponentName})`, "m"),
           `export default $1`
         );
       }
+    } else {
+      // Non-main files: ensure export default on the first component
+      if (!content.includes("export default")) {
+        const funcMatch = content.match(/^function\s+([A-Z]\w*)/m);
+        if (funcMatch) {
+          content = content.replace(
+            new RegExp(`^(function\\s+${funcMatch[1]})`, "m"),
+            `export default $1`
+          );
+        }
+      }
     }
 
+    // Remove any "export" that isn't "export default" (cleanup)
+    content = content.replace(/^export\s+(?!default\b)/gm, "");
+
+    // Combine: imports + cleaned content
+    const finalContent = importLines.join("\n") + "\n\n" + content.trim() + "\n";
+
     output.push({
-      path: `src/${srcPath}`,
-      content,
+      path: `src/${correctedPath}`,
+      content: finalContent,
     });
   }
 
@@ -242,7 +311,7 @@ Open [http://localhost:5173](http://localhost:5173) in your browser.
 }
 
 function findMainFile(files: GeneratedFile[]): GeneratedFile {
-  const priority = ["index.tsx", "index.jsx", "App.tsx", "App.jsx", "page.tsx"];
+  const priority = ["index.tsx", "index.jsx", "App.tsx", "App.jsx", "page.tsx", "index.js", "App.js"];
   for (const name of priority) {
     const f = files.find((f) => f.path.endsWith(name));
     if (f) return f;
@@ -259,7 +328,6 @@ function extractComponentName(file: GeneratedFile): string {
 }
 
 function toSrcPath(filePath: string): string {
-  // Remove leading src/ if already present
   return filePath.replace(/^src\//, "");
 }
 
@@ -267,9 +335,25 @@ function stripExtension(path: string): string {
   return path.replace(/\.(tsx?|jsx?)$/, "");
 }
 
+function computeRelativePath(fromDir: string, toPath: string): string {
+  const fromParts = fromDir.split("/").filter(Boolean);
+  const toParts = toPath.split("/").filter(Boolean);
+
+  // Find common prefix
+  let common = 0;
+  while (common < fromParts.length && common < toParts.length && fromParts[common] === toParts[common]) {
+    common++;
+  }
+
+  const ups = fromParts.length - common;
+  const remainder = toParts.slice(common);
+
+  if (ups === 0) return `./${remainder.join("/")}`;
+  return "../".repeat(ups) + remainder.join("/");
+}
+
 /**
  * Builds the StackBlitz project payload from generated files.
- * Used with the StackBlitz SDK's `openProject` method.
  */
 export function buildStackBlitzProject(
   projectName: string,
