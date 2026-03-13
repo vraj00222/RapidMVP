@@ -39,8 +39,11 @@ import {
   ChevronDown,
   Cpu,
   ExternalLink,
+  Trash2,
 } from "lucide-react";
 import { Highlight, themes } from "prism-react-renderer";
+import JSZip from "jszip";
+import { saveAs } from "file-saver";
 import { cn } from "@/lib/utils";
 import { SidebarProfile } from "@/components/ui/profile-dropdown";
 
@@ -550,6 +553,17 @@ export default function ProjectChatPage() {
     window.open(`/api/preview/${projectId}`, "_blank");
   };
 
+  const handleExport = async () => {
+    if (generatedFiles.length === 0) return;
+    const zip = new JSZip();
+    generatedFiles.forEach((file) => {
+      zip.file(file.path, file.content);
+    });
+    const blob = await zip.generateAsync({ type: "blob" });
+    const name = (projectName || "project").replace(/[^a-zA-Z0-9-_]/g, "_");
+    saveAs(blob, `${name}.zip`);
+  };
+
   const handleNewChat = async () => {
     try {
       const res = await fetch("/api/projects", {
@@ -560,6 +574,26 @@ export default function ProjectChatPage() {
       if (res.ok) {
         const data = await res.json();
         router.push(`/chat/${data.project._id}`);
+      }
+    } catch {
+      // silently fail
+    }
+  };
+
+  const handleDeleteProject = async (deleteId: string) => {
+    try {
+      const res = await fetch(`/api/projects/${deleteId}`, { method: "DELETE" });
+      if (res.ok) {
+        if (deleteId === projectId) {
+          // Deleted current project — navigate to another or create new
+          const remaining = sidebarProjects.filter((p) => p._id !== deleteId);
+          if (remaining.length > 0) {
+            router.push(`/chat/${remaining[0]._id}`);
+          } else {
+            router.push("/chat");
+          }
+        }
+        loadSidebarProjects();
       }
     } catch {
       // silently fail
@@ -621,19 +655,32 @@ export default function ProjectChatPage() {
               </div>
               <div className="space-y-1">
                 {sidebarProjects.map((project) => (
-                  <Link
+                  <div
                     key={project._id}
-                    href={`/chat/${project._id}`}
                     className={cn(
-                      "flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                      "group flex w-full items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
                       project._id === projectId
                         ? "bg-violet-50 text-violet-700 dark:bg-violet-950 dark:text-violet-300"
                         : "text-zinc-600 hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
                     )}
                   >
-                    <MessageSquare className="h-4 w-4 shrink-0" />
-                    <span className="truncate">{project.name}</span>
-                  </Link>
+                    <Link
+                      href={`/chat/${project._id}`}
+                      className="flex flex-1 items-center gap-2 min-w-0"
+                    >
+                      <MessageSquare className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{project.name}</span>
+                    </Link>
+                    <button
+                      onClick={(e) => {
+                        e.preventDefault();
+                        handleDeleteProject(project._id);
+                      }}
+                      className="shrink-0 opacity-0 group-hover:opacity-100 transition-opacity text-zinc-400 hover:text-red-500"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 ))}
                 {sidebarProjects.length === 0 && (
                   <p className="px-3 py-2 text-xs text-zinc-400">
@@ -678,7 +725,13 @@ export default function ProjectChatPage() {
             </Badge>
           </div>
           <div className="flex items-center gap-2">
-            <Button variant="outline" size="sm" className="gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="gap-2"
+              onClick={handleExport}
+              disabled={generatedFiles.length === 0}
+            >
               <Download className="h-4 w-4" />
               Export
             </Button>
