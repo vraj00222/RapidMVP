@@ -207,15 +207,17 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
   // Escape closing script tags and backticks in generated code
   const safeCode = allCode.replace(/<\/script>/gi, "<\\/script>");
 
+  const SC = "</" + "script>"; // avoid template literal parsing issues
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script src="https://cdn.tailwindcss.com"><\/script>
-  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin><\/script>
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin><\/script>
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
+  <script src="https://cdn.tailwindcss.com">${SC}
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin>${SC}
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin>${SC}
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js">${SC}
   <style>
     body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
     #root { min-height: 100vh; }
@@ -224,6 +226,19 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
 </head>
 <body>
   <div id="root"></div>
+  <script>
+    window.onerror = function(msg, url, line) {
+      var root = document.getElementById("root");
+      if (root && !root.querySelector("[data-error]")) {
+        var el = document.createElement("div");
+        el.setAttribute("data-error", "1");
+        el.style.cssText = "padding:32px;color:#ef4444;font-family:monospace;font-size:14px;white-space:pre-wrap";
+        el.textContent = "Preview Error:\\n" + msg + (line ? "\\nLine " + line : "");
+        root.innerHTML = "";
+        root.appendChild(el);
+      }
+    };
+  ${SC}
   <script type="text/babel" data-presets="react">
     const { useState, useEffect, useRef, useCallback, useMemo, useReducer, createContext, useContext, Fragment } = React;
 
@@ -235,22 +250,9 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
     } catch (err) {
       document.getElementById("root").innerHTML =
         '<div style="padding:32px;color:#ef4444;font-family:monospace;font-size:14px;white-space:pre-wrap">' +
-        '<strong>Render Error:</strong>\\n\\n' + err.message + '</div>';
+        '<strong>Render Error:</strong>\\n' + err.message + '</div>';
     }
-  <\/script>
-  <script>
-    window.onerror = function(msg, url, line) {
-      var root = document.getElementById("root");
-      if (root && !root.querySelector("[data-error]")) {
-        var el = document.createElement("div");
-        el.setAttribute("data-error", "1");
-        el.style.cssText = "padding:32px;color:#ef4444;font-family:monospace;font-size:14px;white-space:pre-wrap";
-        el.textContent = "Preview Error:\\n\\n" + msg + (line ? "\\nLine " + line : "");
-        root.innerHTML = "";
-        root.appendChild(el);
-      }
-    };
-  <\/script>
+  ${SC}
 </body>
 </html>`;
 }
@@ -272,6 +274,7 @@ export default function ProjectChatPage() {
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
   const [copied, setCopied] = useState(false);
   const [generationError, setGenerationError] = useState("");
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [availableModels, setAvailableModels] = useState<AIModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
@@ -286,6 +289,19 @@ export default function ProjectChatPage() {
   useEffect(() => {
     scrollToBottom();
   }, [messages]);
+
+  // Build preview blob URL whenever files change
+  useEffect(() => {
+    if (generatedFiles.length === 0) {
+      setPreviewUrl(null);
+      return;
+    }
+    const html = buildPreviewHtml(generatedFiles);
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [generatedFiles]);
 
   // Load chat history and files for this project
   const loadMessages = useCallback(async () => {
@@ -434,13 +450,12 @@ export default function ProjectChatPage() {
   };
 
   const handleOpenPreviewTab = () => {
-    if (generatedFiles.length === 0) return;
+    if (!previewUrl) return;
+    // Create a fresh blob URL for the new tab (won't be revoked by state changes)
     const html = buildPreviewHtml(generatedFiles);
     const blob = new Blob([html], { type: "text/html" });
     const url = URL.createObjectURL(blob);
     window.open(url, "_blank");
-    // Clean up the blob URL after a delay
-    setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
 
   const handleNewChat = async () => {
@@ -841,13 +856,14 @@ export default function ProjectChatPage() {
                         </div>
                       </div>
                       {/* Live iframe preview */}
-                      <iframe
-                        key={generatedFiles.map((f) => f.path).join(",")}
-                        srcDoc={buildPreviewHtml(generatedFiles)}
-                        className="flex-1 w-full bg-white"
-                        sandbox="allow-scripts allow-same-origin"
-                        title="Live Preview"
-                      />
+                      {previewUrl && (
+                        <iframe
+                          key={previewUrl}
+                          src={previewUrl}
+                          className="flex-1 w-full bg-white"
+                          title="Live Preview"
+                        />
+                      )}
                     </div>
                   )}
                 </div>
