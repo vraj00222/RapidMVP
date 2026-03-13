@@ -318,6 +318,7 @@ export default function ProjectChatPage() {
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
   const [chatWidth, setChatWidth] = useState(50); // percentage
   const [isDragging, setIsDragging] = useState(false);
+  const [streamingText, setStreamingText] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -449,8 +450,8 @@ export default function ProjectChatPage() {
     const userContent = input.trim();
     setInput("");
     setIsLoading(true);
-
     setGenerationError("");
+    setStreamingText("");
 
     // Optimistically add user message to UI
     const optimisticUserMsg: Message = {
@@ -461,7 +462,6 @@ export default function ProjectChatPage() {
     setMessages((prev) => [...prev, optimisticUserMsg]);
 
     try {
-      // Call the generate API (saves messages + files to DB)
       const res = await fetch(`/api/projects/${projectId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -469,34 +469,68 @@ export default function ProjectChatPage() {
       });
 
       if (!res.ok) {
-        const errData = await res.json();
+        const errData = await res.json().catch(() => ({ error: "Generation failed" }));
         setGenerationError(errData.error || "Generation failed");
         setIsLoading(false);
         return;
       }
 
-      const data = await res.json();
+      // Parse SSE stream
+      const reader = res.body!.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let fullText = "";
 
-      // Show explanation in chat (not raw file content)
-      const assistantMsg: Message = {
-        role: "assistant",
-        content: data.explanation || data.fullResponse,
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, assistantMsg]);
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
 
-      // Update generated files and switch to code tab
-      if (data.files && data.files.length > 0) {
-        setGeneratedFiles(data.files);
-        setActiveFileIndex(0);
-        setActiveTab("code");
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        let currentEvent = "";
+        for (const line of lines) {
+          if (line.startsWith("event: ")) {
+            currentEvent = line.slice(7).trim();
+          } else if (line.startsWith("data: ")) {
+            const data = JSON.parse(line.slice(6));
+
+            switch (currentEvent) {
+              case "token":
+                fullText += data.token;
+                setStreamingText(fullText);
+                break;
+              case "done": {
+                // Replace streaming text with final assistant message
+                setStreamingText("");
+                const assistantMsg: Message = {
+                  role: "assistant",
+                  content: data.explanation || data.fullResponse,
+                  timestamp: new Date().toISOString(),
+                };
+                setMessages((prev) => [...prev, assistantMsg]);
+
+                if (data.files && data.files.length > 0) {
+                  setGeneratedFiles(data.files);
+                  setActiveFileIndex(0);
+                  setActiveTab("code");
+                }
+                loadSidebarProjects();
+                break;
+              }
+              case "error":
+                setGenerationError(data.error || "AI generation failed");
+                break;
+            }
+            currentEvent = "";
+          }
+        }
       }
-
-      // Refresh sidebar (project name may have changed)
-      loadSidebarProjects();
     } catch {
       setGenerationError("Something went wrong. Please try again.");
     } finally {
+      setStreamingText("");
       setIsLoading(false);
     }
   };
@@ -714,7 +748,22 @@ export default function ProjectChatPage() {
                       </div>
                     </div>
                   ))}
-                  {isLoading && <LoadingIndicator />}
+                  {isLoading && !streamingText && <LoadingIndicator />}
+                  {streamingText && (
+                    <div className="flex gap-4">
+                      <Avatar className="h-8 w-8 shrink-0">
+                        <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white">
+                          <Bot className="h-4 w-4" />
+                        </AvatarFallback>
+                      </Avatar>
+                      <div className="max-w-[80%] rounded-2xl bg-white px-4 py-3 shadow-sm dark:bg-zinc-800">
+                        <p className="whitespace-pre-wrap text-sm">
+                          {extractExplanation(stripThinkTags(streamingText))}
+                        </p>
+                        <span className="inline-block h-4 w-1 animate-pulse bg-violet-500 align-middle" />
+                      </div>
+                    </div>
+                  )}
                   {generationError && (
                     <div className="mx-auto max-w-[80%] rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400">
                       {generationError}

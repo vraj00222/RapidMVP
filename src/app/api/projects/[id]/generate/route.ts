@@ -83,14 +83,15 @@ interface ChatMessage {
   content: string;
 }
 
-// --- Provider call functions ---
+// --- Streaming provider functions ---
+// Each returns a ReadableStream of text chunks
 
-async function callOpenAICompatible(
+async function streamOpenAICompatible(
   url: string,
   apiKey: string,
   model: string,
   messages: ChatMessage[]
-): Promise<string> {
+): Promise<ReadableStream<string>> {
   const res = await fetch(url, {
     method: "POST",
     headers: {
@@ -102,6 +103,7 @@ async function callOpenAICompatible(
       messages,
       max_tokens: 4096,
       temperature: 0.7,
+      stream: true,
     }),
   });
 
@@ -112,16 +114,52 @@ async function callOpenAICompatible(
     );
   }
 
-  const data = await res.json();
-  return data.choices?.[0]?.message?.content || "";
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+
+  return new ReadableStream<string>({
+    async pull(controller) {
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+          const data = trimmed.slice(6);
+          if (data === "[DONE]") {
+            controller.close();
+            return;
+          }
+          try {
+            const parsed = JSON.parse(data);
+            const content = parsed.choices?.[0]?.delta?.content;
+            if (content) {
+              controller.enqueue(content);
+            }
+          } catch {
+            // skip malformed chunks
+          }
+        }
+      }
+    },
+  });
 }
 
-async function callGemini(
+async function streamGemini(
   apiKey: string,
   model: string,
   messages: ChatMessage[]
-): Promise<string> {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+): Promise<ReadableStream<string>> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
   const contents = messages
     .filter((m) => m.role !== "system")
@@ -150,15 +188,46 @@ async function callGemini(
     );
   }
 
-  const data = await res.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+
+  return new ReadableStream<string>({
+    async pull(controller) {
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+          try {
+            const parsed = JSON.parse(trimmed.slice(6));
+            const text = parsed.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (text) {
+              controller.enqueue(text);
+            }
+          } catch {
+            // skip
+          }
+        }
+      }
+    },
+  });
 }
 
-async function callAnthropic(
+async function streamAnthropic(
   apiKey: string,
   model: string,
   messages: ChatMessage[]
-): Promise<string> {
+): Promise<ReadableStream<string>> {
   const systemMsg = messages.find((m) => m.role === "system");
   const chatMsgs = messages.filter((m) => m.role !== "system");
 
@@ -172,6 +241,7 @@ async function callAnthropic(
     body: JSON.stringify({
       model,
       max_tokens: 4096,
+      stream: true,
       system: systemMsg?.content || "",
       messages: chatMsgs.map((m) => ({ role: m.role, content: m.content })),
     }),
@@ -184,48 +254,44 @@ async function callAnthropic(
     );
   }
 
-  const data = await res.json();
-  return data.content?.[0]?.text || "";
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+
+  return new ReadableStream<string>({
+    async pull(controller) {
+      let buffer = "";
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          controller.close();
+          return;
+        }
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith("data: ")) continue;
+          try {
+            const parsed = JSON.parse(trimmed.slice(6));
+            if (parsed.type === "content_block_delta") {
+              const text = parsed.delta?.text;
+              if (text) controller.enqueue(text);
+            }
+          } catch {
+            // skip
+          }
+        }
+      }
+    },
+  });
 }
 
-// --- Generate with selected model or fallback ---
+// --- Provider dispatching ---
 
-async function callModel(
-  model: AIModel,
-  messages: ChatMessage[]
-): Promise<string> {
-  const apiKey = getApiKeyForProvider(model.provider);
-  if (!apiKey) {
-    throw new Error(`No API key configured for ${model.provider}`);
-  }
-
-  switch (model.provider) {
-    case "novita":
-      return callOpenAICompatible(
-        "https://api.novita.ai/v3/openai/chat/completions",
-        apiKey,
-        model.modelId,
-        messages
-      );
-    case "openrouter":
-      return callOpenAICompatible(
-        "https://openrouter.ai/api/v1/chat/completions",
-        apiKey,
-        model.modelId,
-        messages
-      );
-    case "gemini":
-      return callGemini(apiKey, model.modelId, messages);
-    case "anthropic":
-      return callAnthropic(apiKey, model.modelId, messages);
-    default:
-      throw new Error(`Unknown provider: ${model.provider}`);
-  }
-}
-
-function getApiKeyForProvider(
-  provider: string
-): string | undefined {
+function getApiKeyForProvider(provider: string): string | undefined {
   switch (provider) {
     case "novita":
       return process.env.NOVITA_API_KEY;
@@ -240,48 +306,57 @@ function getApiKeyForProvider(
   }
 }
 
-async function generateWithModel(
-  messages: ChatMessage[],
-  selectedModelId?: string
-): Promise<{ text: string; model: AIModel }> {
-  // If user selected a specific model, try it first
+async function streamModel(
+  model: AIModel,
+  messages: ChatMessage[]
+): Promise<ReadableStream<string>> {
+  const apiKey = getApiKeyForProvider(model.provider);
+  if (!apiKey) {
+    throw new Error(`No API key configured for ${model.provider}`);
+  }
+
+  switch (model.provider) {
+    case "novita":
+      return streamOpenAICompatible(
+        "https://api.novita.ai/v3/openai/chat/completions",
+        apiKey,
+        model.modelId,
+        messages
+      );
+    case "openrouter":
+      return streamOpenAICompatible(
+        "https://openrouter.ai/api/v1/chat/completions",
+        apiKey,
+        model.modelId,
+        messages
+      );
+    case "gemini":
+      return streamGemini(apiKey, model.modelId, messages);
+    case "anthropic":
+      return streamAnthropic(apiKey, model.modelId, messages);
+    default:
+      throw new Error(`Unknown provider: ${model.provider}`);
+  }
+}
+
+function resolveModel(selectedModelId?: string): AIModel {
   if (selectedModelId) {
     const model = getModelById(selectedModelId);
     if (model) {
       const apiKey = getApiKeyForProvider(model.provider);
-      if (apiKey) {
-        const text = await callModel(model, messages);
-        if (text) return { text, model };
-        throw new Error(`${model.name}: empty response`);
-      }
+      if (apiKey) return model;
     }
   }
 
-  // Fallback: try all available models in order
-  const errors: string[] = [];
   for (const model of AVAILABLE_MODELS) {
     const apiKey = getApiKeyForProvider(model.provider);
-    if (!apiKey) continue;
-
-    try {
-      const text = await callModel(model, messages);
-      if (text) return { text, model };
-      errors.push(`${model.name}: empty response`);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.error(`Model ${model.name} failed:`, msg);
-      errors.push(`${model.name}: ${msg}`);
-    }
+    if (apiKey) return model;
   }
 
-  throw new Error(
-    errors.length > 0
-      ? `All AI models failed:\n${errors.join("\n")}`
-      : "No AI provider configured. Add NOVITA_API_KEY to .env.local"
-  );
+  throw new Error("No AI provider configured. Add NOVITA_API_KEY to .env.local");
 }
 
-// POST /api/projects/[id]/generate — generate code with AI
+// POST /api/projects/[id]/generate — stream AI generation via SSE
 export async function POST(
   req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -306,7 +381,6 @@ export async function POST(
     );
   }
 
-  // Check at least one provider is configured
   const hasProvider = AVAILABLE_MODELS.some(
     (m) => !!getApiKeyForProvider(m.provider)
   );
@@ -337,62 +411,93 @@ export async function POST(
     { role: "user" as const, content: message.trim() },
   ];
 
+  let usedModel: AIModel;
   try {
-    const { text: assistantText, model: usedModel } = await generateWithModel(
-      chatMessages,
-      modelId
-    );
-
-    console.log(`Generation succeeded via ${usedModel.name} (${usedModel.provider})`);
-
-    const files = parseFilesFromResponse(assistantText);
-    const explanation = extractExplanation(assistantText);
-
-    await Project.findByIdAndUpdate(id, {
-      $push: {
-        chatHistory: {
-          $each: [
-            { role: "user", content: message.trim(), timestamp: new Date() },
-            {
-              role: "assistant",
-              content: assistantText,
-              timestamp: new Date(),
-            },
-          ],
-        },
-      },
-      $set: {
-        files: files.length > 0 ? files : project.files,
-        status: "ready",
-      },
-      $inc: { generationCount: 1 },
-    });
-
-    // Auto-name the project from the first user message
-    if (project.name === "New Project" && chatMessages.length <= 3) {
-      const shortName =
-        message.trim().length > 50
-          ? message.trim().substring(0, 47) + "..."
-          : message.trim();
-      await Project.findByIdAndUpdate(id, {
-        $set: { name: shortName },
-      });
-    }
-
-    return NextResponse.json({
-      explanation,
-      files,
-      fullResponse: assistantText,
-      provider: usedModel.provider,
-      model: usedModel.id,
-      modelName: usedModel.name,
-    });
+    usedModel = resolveModel(modelId);
   } catch (error) {
-    console.error("AI generation error:", error);
-
-    const errorMessage =
-      error instanceof Error ? error.message : "AI generation failed";
-
-    return NextResponse.json({ error: errorMessage }, { status: 500 });
+    const msg = error instanceof Error ? error.message : "No model available";
+    return NextResponse.json({ error: msg }, { status: 503 });
   }
+
+  // Return SSE stream
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream({
+    async start(controller) {
+      const send = (event: string, data: unknown) => {
+        controller.enqueue(
+          encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`)
+        );
+      };
+
+      try {
+        send("meta", {
+          provider: usedModel.provider,
+          model: usedModel.id,
+          modelName: usedModel.name,
+        });
+
+        const aiStream = await streamModel(usedModel, chatMessages);
+        const reader = aiStream.getReader();
+        let fullText = "";
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          fullText += value;
+          send("token", { token: value });
+        }
+
+        console.log(`Generation streamed via ${usedModel.name} (${usedModel.provider})`);
+
+        // Parse final result
+        const files = parseFilesFromResponse(fullText);
+        const explanation = extractExplanation(fullText);
+
+        // Save to DB
+        await Project.findByIdAndUpdate(id, {
+          $push: {
+            chatHistory: {
+              $each: [
+                { role: "user", content: message.trim(), timestamp: new Date() },
+                { role: "assistant", content: fullText, timestamp: new Date() },
+              ],
+            },
+          },
+          $set: {
+            files: files.length > 0 ? files : project.files,
+            status: "ready",
+          },
+          $inc: { generationCount: 1 },
+        });
+
+        // Auto-name project
+        if (project.name === "New Project" && chatMessages.length <= 3) {
+          const shortName =
+            message.trim().length > 50
+              ? message.trim().substring(0, 47) + "..."
+              : message.trim();
+          await Project.findByIdAndUpdate(id, {
+            $set: { name: shortName },
+          });
+        }
+
+        send("done", { explanation, files, fullResponse: fullText });
+      } catch (error) {
+        console.error("AI generation error:", error);
+        const errorMessage =
+          error instanceof Error ? error.message : "AI generation failed";
+        send("error", { error: errorMessage });
+      } finally {
+        controller.close();
+      }
+    },
+  });
+
+  return new Response(stream, {
+    headers: {
+      "Content-Type": "text/event-stream",
+      "Cache-Control": "no-cache, no-store",
+      Connection: "keep-alive",
+    },
+  });
 }
