@@ -33,6 +33,7 @@ import {
   ArrowLeft,
   ChevronDown,
   Cpu,
+  ExternalLink,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { SidebarProfile } from "@/components/ui/profile-dropdown";
@@ -66,10 +67,15 @@ interface SidebarProject {
   updatedAt: string;
 }
 
+function stripThinkTags(text: string): string {
+  return text.replace(/<think>[\s\S]*?<\/think>\s*/g, "").trim();
+}
+
 function extractExplanation(content: string): string {
-  const idx = content.indexOf("---FILE:");
-  if (idx === -1) return content;
-  return content.substring(0, idx).trim();
+  const cleaned = stripThinkTags(content);
+  const idx = cleaned.indexOf("---FILE:");
+  if (idx === -1) return cleaned;
+  return cleaned.substring(0, idx).trim();
 }
 
 const LOADING_WORDS = [
@@ -141,6 +147,8 @@ function LoadingIndicator() {
 }
 
 function buildPreviewHtml(files: GeneratedFile[]): string {
+  if (files.length === 0) return "";
+
   // Find the main component file (prefer index/App/page, then first tsx/jsx)
   const findMain = () => {
     const priority = ["index.tsx", "index.jsx", "App.tsx", "App.jsx", "page.tsx"];
@@ -154,16 +162,37 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
   const mainFile = findMain();
   if (!mainFile) return "";
 
-  // Collect all component code (combine into one block for the preview)
-  const allCode = files
-    .filter((f) => f.language === "typescript" || f.language === "javascript")
-    .map((f) => {
-      // Strip import/export lines for inline preview rendering
-      return f.content
-        .replace(/^import\s+.*$/gm, "")
-        .replace(/^export\s+default\s+/gm, "const __Component__ = ")
-        .replace(/^export\s+/gm, "");
-    })
+  // Strip TypeScript type annotations, imports, and exports for browser execution
+  function stripForBrowser(code: string): string {
+    return code
+      // Remove import statements
+      .replace(/^import\s+.*$/gm, "")
+      // Remove interface/type declarations (multiline)
+      .replace(/^(export\s+)?(interface|type)\s+\w+[\s\S]*?^\}/gm, "")
+      // Remove single-line type exports
+      .replace(/^export\s+type\s+.*$/gm, "")
+      // Convert "export default function" to just "function"
+      .replace(/^export\s+default\s+function\s+/gm, "function ")
+      // Remove remaining "export" keywords
+      .replace(/^export\s+/gm, "")
+      // Strip TS generic type params from function calls like useState<number>
+      .replace(/(useState|useRef|useCallback|useMemo|useReducer|createContext)<[^>]+>/g, "$1")
+      // Strip TS type annotations from params: (x: string) → (x)
+      .replace(/:\s*(string|number|boolean|any|void|never|null|undefined|React\.\w+|\w+\[\]|Record<[^>]+>|\{[^}]*\})\s*([,)=])/g, " $2")
+      // Strip return type annotations
+      .replace(/\)\s*:\s*\w+(\[\])?\s*(\{|=>)/g, ") $2")
+      // Strip "as Type" casts
+      .replace(/\s+as\s+\w+/g, "");
+  }
+
+  // Collect all component code — put helper files first, main file last
+  const otherFiles = files.filter(
+    (f) => f !== mainFile && (f.language === "typescript" || f.language === "javascript")
+  );
+  const orderedFiles = [...otherFiles, mainFile];
+
+  const allCode = orderedFiles
+    .map((f) => stripForBrowser(f.content))
     .join("\n\n");
 
   // Get the main component name from the default export
@@ -174,6 +203,9 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
 
   const cssFiles = files.filter((f) => f.language === "css");
   const cssContent = cssFiles.map((f) => f.content).join("\n");
+
+  // Escape closing script tags and backticks in generated code
+  const safeCode = allCode.replace(/<\/script>/gi, "<\\/script>");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -186,26 +218,37 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
   <script src="https://unpkg.com/@babel/standalone/babel.min.js"><\/script>
   <style>
     body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
+    #root { min-height: 100vh; }
     ${cssContent}
   </style>
 </head>
 <body>
   <div id="root"></div>
-  <script type="text/babel" data-type="module">
-    const { useState, useEffect, useRef, useCallback, useMemo } = React;
+  <script type="text/babel" data-presets="react">
+    const { useState, useEffect, useRef, useCallback, useMemo, useReducer, createContext, useContext, Fragment } = React;
 
-    ${allCode}
+    ${safeCode}
 
-    const root = ReactDOM.createRoot(document.getElementById("root"));
-    root.render(React.createElement(${componentName}));
+    try {
+      const root = ReactDOM.createRoot(document.getElementById("root"));
+      root.render(React.createElement(${componentName}));
+    } catch (err) {
+      document.getElementById("root").innerHTML =
+        '<div style="padding:32px;color:#ef4444;font-family:monospace;font-size:14px;white-space:pre-wrap">' +
+        '<strong>Render Error:</strong>\\n\\n' + err.message + '</div>';
+    }
   <\/script>
   <script>
-    // Error overlay
-    window.onerror = function(msg, url, line, col, error) {
-      const el = document.createElement("div");
-      el.style.cssText = "position:fixed;inset:0;background:rgba(0,0,0,0.85);color:#ff6b6b;padding:32px;font-family:monospace;font-size:14px;white-space:pre-wrap;overflow:auto;z-index:9999";
-      el.textContent = "Preview Error:\\n\\n" + msg + (line ? "\\nLine " + line : "");
-      document.body.appendChild(el);
+    window.onerror = function(msg, url, line) {
+      var root = document.getElementById("root");
+      if (root && !root.querySelector("[data-error]")) {
+        var el = document.createElement("div");
+        el.setAttribute("data-error", "1");
+        el.style.cssText = "padding:32px;color:#ef4444;font-family:monospace;font-size:14px;white-space:pre-wrap";
+        el.textContent = "Preview Error:\\n\\n" + msg + (line ? "\\nLine " + line : "");
+        root.innerHTML = "";
+        root.appendChild(el);
+      }
     };
   <\/script>
 </body>
@@ -388,6 +431,16 @@ export default function ProjectChatPage() {
     await navigator.clipboard.writeText(content);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  const handleOpenPreviewTab = () => {
+    if (generatedFiles.length === 0) return;
+    const html = buildPreviewHtml(generatedFiles);
+    const blob = new Blob([html], { type: "text/html" });
+    const url = URL.createObjectURL(blob);
+    window.open(url, "_blank");
+    // Clean up the blob URL after a delay
+    setTimeout(() => URL.revokeObjectURL(url), 5000);
   };
 
   const handleNewChat = async () => {
@@ -744,11 +797,14 @@ export default function ProjectChatPage() {
                 </button>
               </div>
               <div className="flex items-center gap-1">
-                <Button variant="ghost" size="icon">
-                  <RefreshCw className="h-4 w-4" />
-                </Button>
-                <Button variant="ghost" size="icon">
-                  <Maximize2 className="h-4 w-4" />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  onClick={handleOpenPreviewTab}
+                  disabled={generatedFiles.length === 0}
+                  title="Open in new tab"
+                >
+                  <ExternalLink className="h-4 w-4" />
                 </Button>
               </div>
             </div>
@@ -789,7 +845,7 @@ export default function ProjectChatPage() {
                         key={generatedFiles.map((f) => f.path).join(",")}
                         srcDoc={buildPreviewHtml(generatedFiles)}
                         className="flex-1 w-full bg-white"
-                        sandbox="allow-scripts"
+                        sandbox="allow-scripts allow-same-origin"
                         title="Live Preview"
                       />
                     </div>
