@@ -146,135 +146,6 @@ function LoadingIndicator() {
   );
 }
 
-function buildPreviewHtml(files: GeneratedFile[]): string {
-  if (files.length === 0) return "";
-
-  // Find the main component file (prefer index/App/page, then first tsx/jsx)
-  const findMain = () => {
-    const priority = ["index.tsx", "index.jsx", "App.tsx", "App.jsx", "page.tsx"];
-    for (const name of priority) {
-      const f = files.find((f) => f.path.endsWith(name));
-      if (f) return f;
-    }
-    return files.find((f) => f.language === "typescript" || f.language === "javascript") || files[0];
-  };
-
-  const mainFile = findMain();
-  if (!mainFile) return "";
-
-  // Strip TypeScript type annotations, imports, and exports for browser execution
-  function stripForBrowser(code: string): string {
-    return code
-      // Remove import statements
-      .replace(/^import\s+.*$/gm, "")
-      // Remove interface/type declarations (multiline)
-      .replace(/^(export\s+)?(interface|type)\s+\w+[\s\S]*?^\}/gm, "")
-      // Remove single-line type exports
-      .replace(/^export\s+type\s+.*$/gm, "")
-      // Convert "export default function" to just "function"
-      .replace(/^export\s+default\s+function\s+/gm, "function ")
-      // Remove remaining "export" keywords
-      .replace(/^export\s+/gm, "")
-      // Strip TS generic type params from function calls like useState<number>
-      .replace(/(useState|useRef|useCallback|useMemo|useReducer|createContext)<[^>]+>/g, "$1")
-      // Strip TS type annotations from params: (x: string) → (x)
-      .replace(/:\s*(string|number|boolean|any|void|never|null|undefined|React\.\w+|\w+\[\]|Record<[^>]+>|\{[^}]*\})\s*([,)=])/g, " $2")
-      // Strip return type annotations
-      .replace(/\)\s*:\s*\w+(\[\])?\s*(\{|=>)/g, ") $2")
-      // Strip "as Type" casts
-      .replace(/\s+as\s+\w+/g, "");
-  }
-
-  // Collect all component code — put helper files first, main file last
-  const otherFiles = files.filter(
-    (f) => f !== mainFile && (f.language === "typescript" || f.language === "javascript")
-  );
-  const orderedFiles = [...otherFiles, mainFile];
-
-  const allCode = orderedFiles
-    .map((f) => stripForBrowser(f.content))
-    .join("\n\n");
-
-  // Get the main component name from the default export
-  const exportMatch = mainFile.content.match(
-    /export\s+default\s+function\s+(\w+)/
-  );
-  const componentName = exportMatch?.[1] || "App";
-
-  const cssFiles = files.filter((f) => f.language === "css");
-  const cssContent = cssFiles.map((f) => f.content).join("\n");
-
-  // Escape closing script tags and backticks in generated code
-  const safeCode = allCode.replace(/<\/script>/gi, "<\\/script>");
-
-  const SC = "</" + "script>";
-
-  // Escape backticks and ${} in generated code so it doesn't break the template
-  const escapedCode = safeCode.replace(/\\/g, "\\\\").replace(/`/g, "\\`").replace(/\$/g, "\\$");
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <script src="https://cdn.tailwindcss.com">${SC}
-  <script src="https://unpkg.com/react@18/umd/react.development.js">${SC}
-  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js">${SC}
-  <script src="https://unpkg.com/@babel/standalone/babel.min.js">${SC}
-  <style>
-    body { margin: 0; font-family: system-ui, -apple-system, sans-serif; }
-    #root { min-height: 100vh; }
-    ${cssContent}
-  </style>
-</head>
-<body>
-  <div id="root"></div>
-  <script>
-    function showError(title, msg) {
-      var root = document.getElementById("root");
-      root.innerHTML = '<div style="padding:24px;font-family:monospace;font-size:13px;white-space:pre-wrap">' +
-        '<div style="color:#ef4444;font-weight:bold;margin-bottom:8px">' + title + '</div>' +
-        '<div style="color:#a1a1aa">' + msg + '</div></div>';
-    }
-
-    // Wait for Babel to load, then compile + run manually
-    // This avoids cross-origin "Script error." from type="text/babel"
-    function boot() {
-      if (typeof Babel === "undefined") {
-        showError("Loading Error", "Babel failed to load. Check your internet connection.");
-        return;
-      }
-
-      var jsxCode = ${JSON.stringify(
-    `const { useState, useEffect, useRef, useCallback, useMemo, useReducer, createContext, useContext, Fragment } = React;\n\n${safeCode}\n\ntry {\n  const root = ReactDOM.createRoot(document.getElementById("root"));\n  root.render(React.createElement(${componentName}));\n} catch (err) {\n  document.getElementById("root").innerHTML = '<div style=\"padding:32px;color:#ef4444;font-family:monospace\">' + err.message + '</div>';\n}`
-  )};
-
-      try {
-        var output = Babel.transform(jsxCode, { presets: ["react"] });
-        var fn = new Function(output.code);
-        fn();
-      } catch (err) {
-        showError("Compile/Render Error:", err.message);
-      }
-    }
-
-    // Babel loads async, poll until ready
-    var attempts = 0;
-    var timer = setInterval(function() {
-      attempts++;
-      if (typeof Babel !== "undefined") {
-        clearInterval(timer);
-        boot();
-      } else if (attempts > 50) {
-        clearInterval(timer);
-        showError("Timeout", "Babel did not load after 5 seconds.");
-      }
-    }, 100);
-  ${SC}
-</body>
-</html>`;
-}
-
 export default function ProjectChatPage() {
   const params = useParams();
   const router = useRouter();
@@ -292,13 +163,16 @@ export default function ProjectChatPage() {
   const [activeTab, setActiveTab] = useState<"preview" | "code">("preview");
   const [copied, setCopied] = useState(false);
   const [generationError, setGenerationError] = useState("");
-  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewKey, setPreviewKey] = useState(0);
   const [availableModels, setAvailableModels] = useState<AIModelOption[]>([]);
   const [selectedModelId, setSelectedModelId] = useState<string>("");
   const [modelPickerOpen, setModelPickerOpen] = useState(false);
+  const [chatWidth, setChatWidth] = useState(50); // percentage
+  const [isDragging, setIsDragging] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -308,17 +182,38 @@ export default function ProjectChatPage() {
     scrollToBottom();
   }, [messages]);
 
-  // Build preview blob URL whenever files change
+  // Resizable panel drag handler
   useEffect(() => {
-    if (generatedFiles.length === 0) {
-      setPreviewUrl(null);
-      return;
+    if (!isDragging) return;
+
+    const handleMouseMove = (e: MouseEvent) => {
+      if (!containerRef.current) return;
+      const rect = containerRef.current.getBoundingClientRect();
+      const pct = ((e.clientX - rect.left) / rect.width) * 100;
+      setChatWidth(Math.min(80, Math.max(20, pct)));
+    };
+
+    const handleMouseUp = () => setIsDragging(false);
+
+    document.addEventListener("mousemove", handleMouseMove);
+    document.addEventListener("mouseup", handleMouseUp);
+    // Prevent text selection while dragging
+    document.body.style.userSelect = "none";
+    document.body.style.cursor = "col-resize";
+
+    return () => {
+      document.removeEventListener("mousemove", handleMouseMove);
+      document.removeEventListener("mouseup", handleMouseUp);
+      document.body.style.userSelect = "";
+      document.body.style.cursor = "";
+    };
+  }, [isDragging]);
+
+  // Refresh preview whenever files change
+  useEffect(() => {
+    if (generatedFiles.length > 0) {
+      setPreviewKey((k) => k + 1);
     }
-    const html = buildPreviewHtml(generatedFiles);
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    setPreviewUrl(url);
-    return () => URL.revokeObjectURL(url);
   }, [generatedFiles]);
 
   // Load chat history and files for this project
@@ -468,12 +363,8 @@ export default function ProjectChatPage() {
   };
 
   const handleOpenPreviewTab = () => {
-    if (!previewUrl) return;
-    // Create a fresh blob URL for the new tab (won't be revoked by state changes)
-    const html = buildPreviewHtml(generatedFiles);
-    const blob = new Blob([html], { type: "text/html" });
-    const url = URL.createObjectURL(blob);
-    window.open(url, "_blank");
+    if (generatedFiles.length === 0) return;
+    window.open(`/api/preview/${projectId}`, "_blank");
   };
 
   const handleNewChat = async () => {
@@ -616,9 +507,9 @@ export default function ProjectChatPage() {
         </header>
 
         {/* Chat + Preview */}
-        <div className="flex flex-1 overflow-hidden">
+        <div ref={containerRef} className="flex flex-1 overflow-hidden">
           {/* Chat Area */}
-          <div className="flex w-1/2 flex-col border-r border-zinc-200 dark:border-zinc-800">
+          <div className="flex flex-col" style={{ width: `${chatWidth}%` }}>
             {/* Messages */}
             <div className="flex-1 overflow-y-auto p-6">
               {messages.length === 0 ? (
@@ -799,8 +690,17 @@ export default function ProjectChatPage() {
             </div>
           </div>
 
+          {/* Drag handle */}
+          <div
+            className="group relative w-1 shrink-0 cursor-col-resize bg-zinc-200 transition-colors hover:bg-violet-400 dark:bg-zinc-700 dark:hover:bg-violet-500"
+            onMouseDown={() => setIsDragging(true)}
+          >
+            <div className="absolute inset-y-0 -left-1 -right-1 z-10" />
+            <div className="absolute left-1/2 top-1/2 h-8 w-1 -translate-x-1/2 -translate-y-1/2 rounded-full bg-zinc-400 opacity-0 transition-opacity group-hover:opacity-100 dark:bg-zinc-500" />
+          </div>
+
           {/* Preview Area */}
-          <div className="flex w-1/2 flex-col bg-zinc-100 dark:bg-zinc-900">
+          <div className="flex flex-1 flex-col overflow-hidden bg-zinc-100 dark:bg-zinc-900">
             {/* Tabs */}
             <div className="flex items-center justify-between border-b border-zinc-200 bg-white px-4 dark:border-zinc-800 dark:bg-zinc-900">
               <div className="flex">
@@ -873,15 +773,13 @@ export default function ProjectChatPage() {
                           preview://localhost
                         </div>
                       </div>
-                      {/* Live iframe preview */}
-                      {previewUrl && (
-                        <iframe
-                          key={previewUrl}
-                          src={previewUrl}
-                          className="flex-1 w-full bg-white"
-                          title="Live Preview"
-                        />
-                      )}
+                      {/* Live iframe preview — served from same-origin API route */}
+                      <iframe
+                        key={previewKey}
+                        src={`/api/preview/${projectId}`}
+                        className="flex-1 w-full bg-white"
+                        title="Live Preview"
+                      />
                     </div>
                   )}
                 </div>

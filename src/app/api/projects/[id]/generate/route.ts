@@ -18,14 +18,25 @@ IMPORTANT: Return your response in this exact format:
 ---END FILE---
 
 Rules:
-- Use React with TypeScript and Tailwind CSS
+- Use React with JSX and Tailwind CSS
 - Create complete, working components
 - Use modern React patterns (hooks, functional components)
-- Include proper TypeScript types
 - Make the UI look polished with Tailwind CSS
 - Each file should be self-contained and importable
 - Use descriptive file paths like "components/ProductCard.tsx"
-- You can generate multiple files if the request is complex`;
+- You can generate multiple files if the request is complex
+
+CRITICAL rules for browser preview compatibility:
+- Do NOT use TypeScript syntax (no type annotations, no interfaces, no generics, no "as" casts, no enum). Write plain JavaScript/JSX in .tsx files.
+- Do NOT import from external packages (no "import React from 'react'", no "import { useState } from 'react'"). React and all hooks are available as globals.
+- Always use "export default function ComponentName()" for the main component in each file.
+- Do NOT use "import" or "require" to reference other generated files. If you need shared code, put everything in a single file OR define all helpers before they are used.
+- Keep all code in as FEW files as possible (ideally one file).
+- Tailwind CSS is loaded via CDN — use className with Tailwind utility classes freely.
+- For icons, use inline SVGs or emoji instead of importing icon libraries.
+- For state management, only use React.useState, React.useEffect, React.useRef etc.
+- Do NOT use Next.js-specific features (no next/link, next/image, next/router, next/navigation, "use client", etc.)
+- Do NOT use a tailwind.config object or configure Tailwind — it works out of the box via CDN.`;
 
 interface ParsedFile {
   path: string;
