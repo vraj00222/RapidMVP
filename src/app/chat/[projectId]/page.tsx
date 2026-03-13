@@ -24,6 +24,11 @@ import {
   Sparkles,
   FileCode,
   FolderTree,
+  FolderOpen,
+  Folder,
+  File,
+  FileJson,
+  FileType,
   RefreshCw,
   Maximize2,
   MessageSquare,
@@ -60,6 +65,149 @@ interface AIModelOption {
   description: string;
   inputPrice: string;
   outputPrice: string;
+}
+
+// --- File Tree Types & Helpers ---
+
+interface TreeNode {
+  name: string;
+  path: string; // full path for files, folder path for dirs
+  type: "file" | "folder";
+  children?: TreeNode[];
+  fileIndex?: number; // index into generatedFiles array
+}
+
+function buildFileTree(files: GeneratedFile[]): TreeNode[] {
+  const root: TreeNode[] = [];
+
+  files.forEach((file, index) => {
+    const parts = file.path.split("/");
+    let current = root;
+
+    parts.forEach((part, i) => {
+      const isFile = i === parts.length - 1;
+      const existing = current.find((n) => n.name === part && n.type === (isFile ? "file" : "folder"));
+
+      if (existing && !isFile) {
+        current = existing.children!;
+      } else if (isFile) {
+        current.push({
+          name: part,
+          path: file.path,
+          type: "file",
+          fileIndex: index,
+        });
+      } else {
+        const folder: TreeNode = {
+          name: part,
+          path: parts.slice(0, i + 1).join("/"),
+          type: "folder",
+          children: [],
+        };
+        current.push(folder);
+        current = folder.children!;
+      }
+    });
+  });
+
+  // Sort: folders first, then files, alphabetically within each group
+  function sortTree(nodes: TreeNode[]): TreeNode[] {
+    return nodes
+      .sort((a, b) => {
+        if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      })
+      .map((n) => (n.children ? { ...n, children: sortTree(n.children) } : n));
+  }
+
+  return sortTree(root);
+}
+
+function getFileIcon(name: string) {
+  const ext = name.split(".").pop()?.toLowerCase();
+  switch (ext) {
+    case "tsx":
+    case "jsx":
+      return <FileCode className="h-4 w-4 text-blue-400" />;
+    case "ts":
+    case "js":
+      return <FileType className="h-4 w-4 text-yellow-400" />;
+    case "css":
+      return <FileType className="h-4 w-4 text-purple-400" />;
+    case "json":
+      return <FileJson className="h-4 w-4 text-green-400" />;
+    case "html":
+      return <FileCode className="h-4 w-4 text-orange-400" />;
+    default:
+      return <File className="h-4 w-4 text-zinc-400" />;
+  }
+}
+
+function FileTreeNode({
+  node,
+  activeFileIndex,
+  onSelectFile,
+  depth = 0,
+}: {
+  node: TreeNode;
+  activeFileIndex: number;
+  onSelectFile: (index: number) => void;
+  depth?: number;
+}) {
+  const [expanded, setExpanded] = useState(true);
+
+  if (node.type === "folder") {
+    return (
+      <div>
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-700/50 hover:text-zinc-200"
+          style={{ paddingLeft: `${depth * 12 + 8}px` }}
+        >
+          <ChevronRight
+            className={cn("h-3 w-3 shrink-0 transition-transform", expanded && "rotate-90")}
+          />
+          {expanded ? (
+            <FolderOpen className="h-4 w-4 shrink-0 text-amber-400" />
+          ) : (
+            <Folder className="h-4 w-4 shrink-0 text-amber-400" />
+          )}
+          <span className="truncate font-medium">{node.name}</span>
+        </button>
+        {expanded && node.children && (
+          <div>
+            {node.children.map((child) => (
+              <FileTreeNode
+                key={child.path}
+                node={child}
+                activeFileIndex={activeFileIndex}
+                onSelectFile={onSelectFile}
+                depth={depth + 1}
+              />
+            ))}
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const isActive = node.fileIndex === activeFileIndex;
+
+  return (
+    <button
+      onClick={() => node.fileIndex !== undefined && onSelectFile(node.fileIndex)}
+      className={cn(
+        "flex w-full items-center gap-1.5 rounded px-2 py-1 text-xs transition-colors",
+        isActive
+          ? "bg-violet-600/20 text-violet-300"
+          : "text-zinc-400 hover:bg-zinc-700/50 hover:text-zinc-200"
+      )}
+      style={{ paddingLeft: `${depth * 12 + 20}px` }}
+    >
+      {getFileIcon(node.name)}
+      <span className="truncate">{node.name}</span>
+    </button>
+  );
 }
 
 interface SidebarProject {
@@ -798,77 +946,89 @@ export default function ProjectChatPage() {
                       </div>
                     </div>
                   ) : (
-                    <>
-                      {/* File tabs */}
-                      <div className="flex items-center gap-0 overflow-x-auto border-b border-zinc-200 bg-zinc-50 dark:border-zinc-700 dark:bg-zinc-800">
-                        {generatedFiles.map((file, i) => (
-                          <button
-                            key={file.path}
-                            onClick={() => setActiveFileIndex(i)}
-                            className={cn(
-                              "shrink-0 border-r border-zinc-200 px-4 py-2 text-xs font-medium transition-colors dark:border-zinc-700",
-                              i === activeFileIndex
-                                ? "bg-white text-zinc-900 dark:bg-zinc-900 dark:text-white"
-                                : "text-zinc-500 hover:bg-zinc-100 hover:text-zinc-700 dark:hover:bg-zinc-700"
-                            )}
+                    <div className="flex flex-1 overflow-hidden">
+                      {/* File Explorer Sidebar */}
+                      <div className="flex w-56 shrink-0 flex-col border-r border-zinc-700 bg-[#1e1e2e]">
+                        <div className="flex items-center gap-2 border-b border-zinc-700 px-3 py-2">
+                          <FolderTree className="h-3.5 w-3.5 text-zinc-400" />
+                          <span className="text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                            Explorer
+                          </span>
+                          <span className="ml-auto text-[10px] text-zinc-600">
+                            {generatedFiles.length} file{generatedFiles.length !== 1 && "s"}
+                          </span>
+                        </div>
+                        <div className="flex-1 overflow-y-auto py-1">
+                          {buildFileTree(generatedFiles).map((node) => (
+                            <FileTreeNode
+                              key={node.path}
+                              node={node}
+                              activeFileIndex={activeFileIndex}
+                              onSelectFile={setActiveFileIndex}
+                            />
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Code Editor */}
+                      <div className="flex flex-1 flex-col overflow-hidden">
+                        {/* File path bar */}
+                        <div className="flex items-center justify-between border-b border-zinc-700 bg-[#252536] px-4 py-1.5">
+                          <div className="flex items-center gap-2">
+                            {getFileIcon(generatedFiles[activeFileIndex]?.path.split("/").pop() || "")}
+                            <span className="text-xs text-zinc-300">
+                              {generatedFiles[activeFileIndex]?.path}
+                            </span>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1 text-xs text-zinc-400 hover:text-zinc-200"
+                            onClick={handleCopy}
                           >
-                            {file.path.split("/").pop()}
-                          </button>
-                        ))}
+                            {copied ? (
+                              <>
+                                <Check className="h-3 w-3" />
+                                Copied
+                              </>
+                            ) : (
+                              <>
+                                <Copy className="h-3 w-3" />
+                                Copy
+                              </>
+                            )}
+                          </Button>
+                        </div>
+                        {/* Code with syntax highlighting */}
+                        <div className="flex-1 overflow-auto">
+                          <Highlight
+                            theme={themes.vsDark}
+                            code={generatedFiles[activeFileIndex]?.content || ""}
+                            language={generatedFiles[activeFileIndex]?.language === "typescript" ? "tsx" : generatedFiles[activeFileIndex]?.language || "text"}
+                          >
+                            {({ style, tokens, getLineProps, getTokenProps }) => (
+                              <pre
+                                className="min-h-full p-4 text-sm leading-relaxed"
+                                style={{ ...style, margin: 0, background: "#1e1e2e" }}
+                              >
+                                {tokens.map((line, i) => (
+                                  <div key={i} {...getLineProps({ line })} className="table-row">
+                                    <span className="table-cell select-none pr-4 text-right text-xs text-zinc-600">
+                                      {i + 1}
+                                    </span>
+                                    <span className="table-cell whitespace-pre-wrap break-all">
+                                      {line.map((token, key) => (
+                                        <span key={key} {...getTokenProps({ token })} />
+                                      ))}
+                                    </span>
+                                  </div>
+                                ))}
+                              </pre>
+                            )}
+                          </Highlight>
+                        </div>
                       </div>
-                      {/* File path */}
-                      <div className="flex items-center justify-between border-b border-zinc-200 bg-zinc-50 px-4 py-1 dark:border-zinc-700 dark:bg-zinc-800">
-                        <span className="text-xs text-zinc-400">
-                          {generatedFiles[activeFileIndex]?.path}
-                        </span>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          className="h-7 gap-1 text-xs"
-                          onClick={handleCopy}
-                        >
-                          {copied ? (
-                            <>
-                              <Check className="h-3 w-3" />
-                              Copied
-                            </>
-                          ) : (
-                            <>
-                              <Copy className="h-3 w-3" />
-                              Copy
-                            </>
-                          )}
-                        </Button>
-                      </div>
-                      {/* Code content with syntax highlighting */}
-                      <div className="flex-1 overflow-auto">
-                        <Highlight
-                          theme={themes.vsDark}
-                          code={generatedFiles[activeFileIndex]?.content || ""}
-                          language={generatedFiles[activeFileIndex]?.language === "typescript" ? "tsx" : generatedFiles[activeFileIndex]?.language || "text"}
-                        >
-                          {({ style, tokens, getLineProps, getTokenProps }) => (
-                            <pre
-                              className="min-h-full p-4 text-sm leading-relaxed"
-                              style={{ ...style, margin: 0, background: "#1e1e2e" }}
-                            >
-                              {tokens.map((line, i) => (
-                                <div key={i} {...getLineProps({ line })} className="table-row">
-                                  <span className="table-cell select-none pr-4 text-right text-xs text-zinc-600">
-                                    {i + 1}
-                                  </span>
-                                  <span className="table-cell whitespace-pre-wrap break-all">
-                                    {line.map((token, key) => (
-                                      <span key={key} {...getTokenProps({ token })} />
-                                    ))}
-                                  </span>
-                                </div>
-                              ))}
-                            </pre>
-                          )}
-                        </Highlight>
-                      </div>
-                    </>
+                    </div>
                   )}
                 </div>
               )}
