@@ -4,6 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev",
+    "dev:full": "mongod --config /opt/homebrew/etc/mongod.conf & sleep 1 && next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"

@@ -101,7 +101,7 @@ async function streamOpenAICompatible(
     body: JSON.stringify({
       model,
       messages,
-      max_tokens: 4096,
+      max_tokens: 8192,
       temperature: 0.7,
       stream: true,
     }),
@@ -240,7 +240,7 @@ async function streamAnthropic(
     },
     body: JSON.stringify({
       model,
-      max_tokens: 4096,
+      max_tokens: 8192,
       stream: true,
       system: systemMsg?.content || "",
       messages: chatMsgs.map((m) => ({ role: m.role, content: m.content })),

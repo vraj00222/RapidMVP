@@ -30,12 +30,16 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
   if (files.length === 0) return "<html><body><p>No files to preview</p></body></html>";
 
   const findMain = () => {
-    const priority = ["index.tsx", "index.jsx", "App.tsx", "App.jsx", "page.tsx"];
+    const priority = ["index.tsx", "index.jsx", "index.js", "App.tsx", "App.jsx", "App.js", "page.tsx", "page.jsx", "page.js"];
     for (const name of priority) {
       const f = files.find((f) => f.path.endsWith(name));
       if (f) return f;
     }
-    return files.find((f) => f.language === "typescript" || f.language === "javascript") || files[0];
+    // Fallback: find the file with "export default function"
+    const withExport = files.find((f) => /export\s+default\s+function\s+\w+/.test(f.content));
+    if (withExport) return withExport;
+    // Last resort: last code file, or first file
+    return files.filter((f) => f.language === "typescript" || f.language === "javascript").pop() || files[0];
   };
 
   const mainFile = findMain();
