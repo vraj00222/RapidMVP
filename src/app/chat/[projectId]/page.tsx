@@ -72,6 +72,52 @@ interface AIModelOption {
   outputPrice: string;
 }
 
+interface Version {
+  index: number;
+  files: GeneratedFile[];
+  timestamp: string;
+}
+
+function parseFilesFromContent(content: string): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+  const fileRegex = /---FILE:\s*(.+?)---\n([\s\S]*?)---END FILE---/g;
+  const langMap: Record<string, string> = {
+    tsx: "typescript",
+    ts: "typescript",
+    jsx: "javascript",
+    js: "javascript",
+    css: "css",
+    html: "html",
+    json: "json",
+  };
+  let match;
+  while ((match = fileRegex.exec(content)) !== null) {
+    const filePath = match[1].trim();
+    const ext = filePath.split(".").pop()?.toLowerCase() || "";
+    files.push({
+      path: filePath,
+      content: match[2].trim(),
+      language: langMap[ext] || "text",
+    });
+  }
+  return files;
+}
+
+function extractVersions(messages: Message[]): Version[] {
+  const versions: Version[] = [];
+  for (const msg of messages) {
+    if (msg.role !== "assistant") continue;
+    const files = parseFilesFromContent(msg.content);
+    if (files.length === 0) continue;
+    versions.push({
+      index: versions.length + 1,
+      files,
+      timestamp: msg.timestamp,
+    });
+  }
+  return versions;
+}
+
 // --- File Tree Types & Helpers ---
 
 interface TreeNode {
@@ -324,6 +370,8 @@ export default function ProjectChatPage() {
   const [chatWidth, setChatWidth] = useState(50); // percentage
   const [isDragging, setIsDragging] = useState(false);
   const [streamingText, setStreamingText] = useState("");
+  const [versions, setVersions] = useState<Version[]>([]);
+  const [activeVersionIndex, setActiveVersionIndex] = useState<number | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -370,6 +418,22 @@ export default function ProjectChatPage() {
       setPreviewKey((k) => k + 1);
     }
   }, [generatedFiles]);
+
+  // Recompute versions when chat history changes.
+  // Auto-jump to the latest version whenever a new one is appended, so the
+  // user always sees the output of the generation they just triggered.
+  const prevVersionCountRef = useRef(0);
+  useEffect(() => {
+    const parsed = extractVersions(messages);
+    setVersions(parsed);
+    setActiveVersionIndex((prevActive) => {
+      if (parsed.length === 0) return null;
+      if (parsed.length > prevVersionCountRef.current) return parsed.length;
+      if (prevActive === null || prevActive > parsed.length) return parsed.length;
+      return prevActive;
+    });
+    prevVersionCountRef.current = parsed.length;
+  }, [messages]);
 
   // Load chat history and files for this project
   const loadMessages = useCallback(async () => {
@@ -507,11 +571,13 @@ export default function ProjectChatPage() {
                 setStreamingText(fullText);
                 break;
               case "done": {
-                // Replace streaming text with final assistant message
+                // Replace streaming text with final assistant message.
+                // Store the full response (including ---FILE:--- blocks) so
+                // extractVersions() can parse it without a page refresh.
                 setStreamingText("");
                 const assistantMsg: Message = {
                   role: "assistant",
-                  content: data.explanation || data.fullResponse,
+                  content: data.fullResponse || data.explanation || "",
                   timestamp: new Date().toISOString(),
                 };
                 setMessages((prev) => [...prev, assistantMsg]);
@@ -540,6 +606,14 @@ export default function ProjectChatPage() {
     }
   };
 
+  const handleSelectVersion = (versionIndex: number) => {
+    const v = versions.find((ver) => ver.index === versionIndex);
+    if (!v) return;
+    setActiveVersionIndex(versionIndex);
+    setGeneratedFiles(v.files);
+    setActiveFileIndex(0);
+  };
+
   const handleCopy = async () => {
     const content =
       generatedFiles.length > 0
@@ -552,7 +626,11 @@ export default function ProjectChatPage() {
 
   const handleOpenPreviewTab = () => {
     if (generatedFiles.length === 0) return;
-    window.open(`/api/preview/${projectId}`, "_blank");
+    const url =
+      activeVersionIndex !== null && activeVersionIndex < versions.length
+        ? `/api/preview/${projectId}?version=${activeVersionIndex}`
+        : `/api/preview/${projectId}`;
+    window.open(url, "_blank");
   };
 
   const handleExport = async () => {
@@ -847,6 +925,16 @@ export default function ProjectChatPage() {
 
             {/* Input */}
             <div className="border-t border-zinc-200 bg-white p-4 dark:border-zinc-800 dark:bg-zinc-900">
+              {/* Iteration-mode indicator */}
+              {generatedFiles.length > 0 && !isLoading && (
+                <div className="mb-3 flex items-center gap-2 rounded-lg border border-violet-200 bg-violet-50 px-3 py-1.5 text-xs text-violet-700 dark:border-violet-800 dark:bg-violet-950/30 dark:text-violet-300">
+                  <RefreshCw className="h-3 w-3 shrink-0" />
+                  <span className="truncate">
+                    Iteration mode — the AI will refine your existing {generatedFiles.length} file{generatedFiles.length === 1 ? "" : "s"} based on your next message
+                  </span>
+                </div>
+              )}
+
               {/* Model Selector */}
               {availableModels.length > 0 && (
                 <div className="mb-3 relative" ref={modelPickerRef}>
@@ -935,7 +1023,11 @@ export default function ProjectChatPage() {
                   ref={textareaRef}
                   value={input}
                   onChange={(e) => setInput(e.target.value)}
-                  placeholder="Describe what you want to build..."
+                  placeholder={
+                    generatedFiles.length > 0
+                      ? "Describe changes or new features (e.g. add a dark mode toggle)..."
+                      : "Describe what you want to build..."
+                  }
                   className="min-h-[80px] resize-none pr-12"
                   onKeyDown={(e) => {
                     if (e.key === "Enter" && !e.shiftKey) {
@@ -998,7 +1090,37 @@ export default function ProjectChatPage() {
                   Code
                 </button>
               </div>
-              <div className="flex items-center gap-1">
+              <div className="flex items-center gap-2">
+                {versions.length >= 1 && (
+                  <div className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-zinc-50 p-1 dark:border-zinc-700 dark:bg-zinc-800">
+                    <span className="pl-1.5 pr-0.5 text-[10px] font-semibold uppercase tracking-wide text-zinc-500">
+                      Version
+                    </span>
+                    {versions.map((v) => {
+                      const isActive = v.index === activeVersionIndex;
+                      const isLatest = v.index === versions.length;
+                      return (
+                        <button
+                          key={v.index}
+                          type="button"
+                          onClick={() => handleSelectVersion(v.index)}
+                          title={`v${v.index}${isLatest ? " (latest)" : ""} · ${new Date(v.timestamp).toLocaleString()}`}
+                          className={cn(
+                            "flex items-center gap-1 rounded px-2 py-0.5 text-xs font-medium transition-colors",
+                            isActive
+                              ? "bg-violet-600 text-white shadow-sm"
+                              : "text-zinc-600 hover:bg-zinc-200 dark:text-zinc-300 dark:hover:bg-zinc-700"
+                          )}
+                        >
+                          v{v.index}
+                          {isLatest && !isActive && (
+                            <span className="text-[9px] font-normal text-zinc-400">latest</span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
                 <Button
                   variant="ghost"
                   size="icon"
@@ -1010,6 +1132,22 @@ export default function ProjectChatPage() {
                 </Button>
               </div>
             </div>
+
+            {/* Viewing-older-version banner */}
+            {versions.length >= 2 && activeVersionIndex !== null && activeVersionIndex < versions.length && (
+              <div className="flex items-center justify-between gap-2 border-b border-amber-200 bg-amber-50 px-4 py-2 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+                <span>
+                  Viewing v{activeVersionIndex} (older). Your next message iterates on v{versions.length} (latest).
+                </span>
+                <button
+                  type="button"
+                  onClick={() => handleSelectVersion(versions.length)}
+                  className="rounded bg-amber-200 px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-300 dark:bg-amber-900/60 dark:text-amber-200 dark:hover:bg-amber-900"
+                >
+                  Jump to latest
+                </button>
+              </div>
+            )}
 
             {/* Content */}
             <div className="flex-1 overflow-hidden">
@@ -1044,8 +1182,12 @@ export default function ProjectChatPage() {
                       </div>
                       {/* Live iframe preview — served from same-origin API route */}
                       <iframe
-                        key={previewKey}
-                        src={`/api/preview/${projectId}`}
+                        key={`${previewKey}-${activeVersionIndex ?? "latest"}`}
+                        src={
+                          activeVersionIndex !== null && activeVersionIndex < versions.length
+                            ? `/api/preview/${projectId}?version=${activeVersionIndex}`
+                            : `/api/preview/${projectId}`
+                        }
                         className="flex-1 w-full bg-white"
                         title="Live Preview"
                       />

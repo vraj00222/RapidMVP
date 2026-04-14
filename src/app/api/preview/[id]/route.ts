@@ -10,6 +10,32 @@ interface GeneratedFile {
   language: string;
 }
 
+const LANG_MAP: Record<string, string> = {
+  tsx: "typescript",
+  ts: "typescript",
+  jsx: "javascript",
+  js: "javascript",
+  css: "css",
+  html: "html",
+  json: "json",
+};
+
+function parseFilesFromMessage(content: string): GeneratedFile[] {
+  const files: GeneratedFile[] = [];
+  const fileRegex = /---FILE:\s*(.+?)---\n([\s\S]*?)---END FILE---/g;
+  let match;
+  while ((match = fileRegex.exec(content)) !== null) {
+    const filePath = match[1].trim();
+    const ext = filePath.split(".").pop()?.toLowerCase() || "";
+    files.push({
+      path: filePath,
+      content: match[2].trim(),
+      language: LANG_MAP[ext] || "text",
+    });
+  }
+  return files;
+}
+
 // Only strip imports/exports — let Babel's TypeScript preset handle all TS syntax
 function stripImportsExports(code: string): string {
   return code
@@ -87,6 +113,14 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
         '<div style="color:#a1a1aa">' + msg + '</div></div>';
     }
 
+    // Catch any uncaught render errors so the page never ends up blank
+    window.addEventListener("error", function(e) {
+      var root = document.getElementById("root");
+      if (root && root.innerHTML.trim() === "") {
+        showError("Runtime Error:", (e.error && e.error.stack) || e.message || String(e));
+      }
+    });
+
     function boot() {
       if (typeof Babel === "undefined") {
         showError("Loading Error", "Babel failed to load.");
@@ -95,6 +129,11 @@ function buildPreviewHtml(files: GeneratedFile[]): string {
 
       var jsxCode = ${JSON.stringify(
     `const { useState, useEffect, useRef, useCallback, useMemo, useReducer, createContext, useContext, Fragment } = React;\n\n` +
+    // Framer-motion shim: renders without animations, strips motion-only props
+    `const __MOTION_PROPS__ = new Set(['initial','animate','exit','whileHover','whileTap','whileFocus','whileInView','whileDrag','transition','variants','viewport','layout','layoutId','drag','dragConstraints','dragElastic','dragMomentum','onAnimationStart','onAnimationComplete','onHoverStart','onHoverEnd','custom']);\n` +
+    `function __stripMotionProps__(props) { const out = {}; for (const k in props) { if (!__MOTION_PROPS__.has(k)) out[k] = props[k]; } return out; }\n` +
+    `const motion = new Proxy({}, { get: (_, tag) => { if (typeof tag !== 'string') return undefined; return React.forwardRef((props, ref) => React.createElement(tag, Object.assign({ ref }, __stripMotionProps__(props)))); } });\n` +
+    `function AnimatePresence(props) { return React.createElement(React.Fragment, null, props.children); }\n\n` +
     safeCode +
     `\n\ntry {\n  const root = ReactDOM.createRoot(document.getElementById("root"));\n  root.render(React.createElement(${componentName}));\n} catch (err) {\n  document.getElementById("root").innerHTML = '<div style="padding:32px;color:#ef4444;font-family:monospace">' + err.message + '</div>';\n}`
   )};
@@ -159,11 +198,35 @@ export async function GET(
     });
   }
 
-  const files: GeneratedFile[] = (project.files || []).map((f: any) => ({
-    path: f.path,
-    content: f.content,
-    language: f.language,
-  }));
+  // Optional ?version=N — render files from the Nth (1-based) file-emitting
+  // assistant message in chat history. Omit to render the latest project.files.
+  const versionParam = req.nextUrl.searchParams.get("version");
+  let files: GeneratedFile[] = [];
+
+  if (versionParam) {
+    const target = parseInt(versionParam, 10);
+    if (Number.isFinite(target) && target >= 1) {
+      let seen = 0;
+      for (const msg of project.chatHistory || []) {
+        if (msg.role !== "assistant") continue;
+        const parsed = parseFilesFromMessage(msg.content);
+        if (parsed.length === 0) continue;
+        seen += 1;
+        if (seen === target) {
+          files = parsed;
+          break;
+        }
+      }
+    }
+  }
+
+  if (files.length === 0) {
+    files = (project.files || []).map((f: { path: string; content: string; language: string }) => ({
+      path: f.path,
+      content: f.content,
+      language: f.language,
+    }));
+  }
 
   const html = buildPreviewHtml(files);
 

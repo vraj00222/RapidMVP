@@ -5,11 +5,11 @@ import dbConnect from "@/lib/db/mongoose";
 import Project from "@/models/Project";
 import { AVAILABLE_MODELS, getModelById, type AIModel } from "@/lib/ai/models";
 
-const SYSTEM_PROMPT = `You are RapidMVP, an expert full-stack developer. When the user describes what they want to build, generate clean, production-ready code.
+const BASE_SYSTEM_PROMPT = `You are RapidMVP, an expert full-stack developer. When the user describes what they want to build, generate clean, production-ready code.
 
 IMPORTANT: Return your response in this exact format:
 
-1. First, provide a brief explanation of what you built (2-3 sentences max).
+1. First, provide a brief explanation of what you built or changed (2-3 sentences max).
 
 2. Then output each file using this exact format:
 
@@ -32,9 +32,43 @@ CRITICAL rules for browser preview compatibility:
 - Since there are no imports, components from other files are available by their function name. Just define each component as a plain function (e.g. "function Header() { ... }") — no "export default", no "import".
 - The main/entry file MUST have "export default function AppName()" — this is the ONLY export in the entire codebase.
 - Tailwind CSS is loaded via CDN — use className with Tailwind utility classes freely.
-- For icons, use inline SVGs or emoji instead of importing icon libraries.
+- For icons, use inline SVGs or emoji instead of importing icon libraries (NO lucide-react, NO react-icons, NO heroicons).
+- Do NOT use framer-motion, react-spring, GSAP, or any other animation library. Use CSS transitions and Tailwind's built-in animation utilities (animate-pulse, animate-bounce, transition-all, duration-*, hover:, group-hover:, etc.) for all motion.
+- Do NOT use chart libraries (no recharts, chart.js, d3). If you need charts, draw them with plain SVG + divs.
 - Do NOT use Next.js-specific features (no next/link, next/image, next/router, "use client", etc.)
-- Do NOT configure Tailwind with a config object — it works out of the box via CDN.`;
+- Do NOT configure Tailwind with a config object — it works out of the box via CDN.
+- Stick to React + Tailwind only. Anything outside that list will fail to render.`;
+
+const ITERATION_APPENDIX = `
+ITERATION MODE — THE USER ALREADY HAS A PROJECT:
+You are NOT building from scratch. The user's current codebase is provided below. Your job is to MODIFY it based on their new request.
+
+CRITICAL iteration rules:
+- You MUST return the COMPLETE updated project — every file the project needs to keep running, not just the ones you changed.
+- Files you omit from your response will be DELETED. Always re-emit unchanged files too.
+- Preserve as much of the existing structure, file paths, component names, and styling as possible. Change only what the user asked for.
+- If the user asks for a new feature, ADD to the existing code. Do not regenerate unrelated components from scratch.
+- If the user asks to "start over" or "build something completely different", you may discard the existing code.
+- Keep the same main entry file name if possible (e.g. if it was App.jsx, keep it App.jsx).
+
+CURRENT CODEBASE (this is the source of truth — more recent than any code shown in chat history):
+{{CURRENT_FILES}}
+`;
+
+function buildSystemPrompt(existingFiles: { path: string; content: string }[]): string {
+  if (existingFiles.length === 0) return BASE_SYSTEM_PROMPT;
+
+  const filesBlock = existingFiles
+    .map((f) => `---FILE: ${f.path}---\n${f.content}\n---END FILE---`)
+    .join("\n\n");
+
+  return BASE_SYSTEM_PROMPT + "\n\n" + ITERATION_APPENDIX.replace("{{CURRENT_FILES}}", filesBlock);
+}
+
+function stripFilesFromHistory(content: string): string {
+  const idx = content.indexOf("---FILE:");
+  return idx === -1 ? content : content.substring(0, idx).trim();
+}
 
 interface ParsedFile {
   path: string;
@@ -402,11 +436,17 @@ export async function POST(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
+  const existingFiles = (project.files || []).map((f) => ({
+    path: f.path,
+    content: f.content,
+  }));
+  const isIteration = existingFiles.length > 0;
+
   const chatMessages: ChatMessage[] = [
-    { role: "system", content: SYSTEM_PROMPT },
+    { role: "system", content: buildSystemPrompt(existingFiles) },
     ...project.chatHistory.map((msg) => ({
       role: msg.role as "user" | "assistant",
-      content: msg.content,
+      content: msg.role === "assistant" ? stripFilesFromHistory(msg.content) : msg.content,
     })),
     { role: "user" as const, content: message.trim() },
   ];
@@ -434,6 +474,7 @@ export async function POST(
           provider: usedModel.provider,
           model: usedModel.id,
           modelName: usedModel.name,
+          mode: isIteration ? "iteration" : "initial",
         });
 
         const aiStream = await streamModel(usedModel, chatMessages);
