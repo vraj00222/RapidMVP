@@ -34,6 +34,7 @@
     "prism-react-renderer": "^2.4.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
+    "repomap-llm": "^0.1.0",
     "shadcn": "^3.8.4",
     "tailwind-merge": "^3.4.0"
   },

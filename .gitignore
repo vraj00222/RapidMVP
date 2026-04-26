@@ -40,3 +40,7 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+REPOMAP.md
+
+# claude code (local project settings, may contain API keys)
+.claude/
