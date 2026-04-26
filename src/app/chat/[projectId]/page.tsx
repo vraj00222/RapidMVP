@@ -40,6 +40,9 @@ import {
   Cpu,
   ExternalLink,
   Trash2,
+  Globe,
+  Clock,
+  X,
 } from "lucide-react";
 import { Highlight, themes } from "prism-react-renderer";
 import JSZip from "jszip";
@@ -346,6 +349,74 @@ function LoadingIndicator() {
   );
 }
 
+function formatRemaining(ms: number): string {
+  if (ms <= 0) return "expired";
+  const totalSec = Math.ceil(ms / 1000);
+  const m = Math.floor(totalSec / 60);
+  const s = totalSec % 60;
+  if (m === 0) return `${s}s`;
+  return `${m}m ${s.toString().padStart(2, "0")}s`;
+}
+
+function DeploymentPill({
+  deployment,
+  now,
+  onCopy,
+  copied,
+  onEnd,
+}: {
+  deployment: { url: string; expiresAt: string };
+  now: number;
+  onCopy: () => void;
+  copied: boolean;
+  onEnd: () => void;
+}) {
+  const remainingMs = new Date(deployment.expiresAt).getTime() - now;
+  const expiringSoon = remainingMs > 0 && remainingMs < 2 * 60 * 1000;
+  return (
+    <div className="flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 p-1 pl-2 dark:border-emerald-700 dark:bg-emerald-950/40">
+      <Globe className="h-3.5 w-3.5 shrink-0 text-emerald-600 dark:text-emerald-400" />
+      <a
+        href={deployment.url}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="max-w-[200px] truncate text-xs font-medium text-emerald-700 hover:underline dark:text-emerald-300"
+        title={deployment.url}
+      >
+        {deployment.url.replace(/^https?:\/\//, "")}
+      </a>
+      <span
+        className={cn(
+          "ml-1 flex shrink-0 items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-semibold",
+          expiringSoon
+            ? "bg-amber-200 text-amber-900 dark:bg-amber-900/60 dark:text-amber-200"
+            : "bg-emerald-200 text-emerald-900 dark:bg-emerald-900/60 dark:text-emerald-200"
+        )}
+        title={`Expires at ${new Date(deployment.expiresAt).toLocaleTimeString()}`}
+      >
+        <Clock className="h-2.5 w-2.5" />
+        {formatRemaining(remainingMs)}
+      </span>
+      <button
+        type="button"
+        onClick={onCopy}
+        title={copied ? "Copied!" : "Copy URL"}
+        className="ml-1 rounded p-1 text-emerald-700 hover:bg-emerald-100 dark:text-emerald-300 dark:hover:bg-emerald-900/50"
+      >
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </button>
+      <button
+        type="button"
+        onClick={onEnd}
+        title="End demo now"
+        className="rounded p-1 text-emerald-700 hover:bg-red-100 hover:text-red-600 dark:text-emerald-300 dark:hover:bg-red-900/50"
+      >
+        <X className="h-3.5 w-3.5" />
+      </button>
+    </div>
+  );
+}
+
 export default function ProjectChatPage() {
   const params = useParams();
   const router = useRouter();
@@ -372,6 +443,13 @@ export default function ProjectChatPage() {
   const [streamingText, setStreamingText] = useState("");
   const [versions, setVersions] = useState<Version[]>([]);
   const [activeVersionIndex, setActiveVersionIndex] = useState<number | null>(null);
+  const [previewError, setPreviewError] = useState<{ title: string; message: string } | null>(null);
+  const [isFixing, setIsFixing] = useState(false);
+  const [deployment, setDeployment] = useState<{ url: string; expiresAt: string } | null>(null);
+  const [isDeploying, setIsDeploying] = useState(false);
+  const [deployError, setDeployError] = useState("");
+  const [deployCopied, setDeployCopied] = useState(false);
+  const [now, setNow] = useState(() => Date.now());
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const modelPickerRef = useRef<HTMLDivElement>(null);
@@ -412,12 +490,69 @@ export default function ProjectChatPage() {
     };
   }, [isDragging]);
 
-  // Refresh preview whenever files change
+  // Refresh preview whenever files change. Also clear any stale preview
+  // error so the Fix-with-AI button doesn't linger after the AI ships a fix.
   useEffect(() => {
     if (generatedFiles.length > 0) {
       setPreviewKey((k) => k + 1);
+      setPreviewError(null);
     }
   }, [generatedFiles]);
+
+  // Listen for runtime errors postMessaged from the preview iframe so we can
+  // surface a one-click "Fix with AI" affordance.
+  useEffect(() => {
+    function onMessage(e: MessageEvent) {
+      const data = e.data as { type?: string; title?: string; message?: string } | null;
+      if (!data || data.type !== "rapidmvp-preview-error") return;
+      setPreviewError({
+        title: data.title || "Runtime Error",
+        message: data.message || "",
+      });
+    }
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  // Hydrate any existing deployment for this project (so the demo URL persists
+  // across page reloads until its TTL elapses).
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/deploy`);
+        if (!res.ok || cancelled) return;
+        const data = await res.json();
+        if (data?.deployment?.url) {
+          setDeployment({
+            url: data.deployment.url,
+            expiresAt: data.deployment.expiresAt,
+          });
+        }
+      } catch { /* ignore */ }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [projectId]);
+
+  // Tick once per second so the countdown stays current.
+  useEffect(() => {
+    if (!deployment) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [deployment]);
+
+  // Auto-clear when the deployment TTL elapses on the client side.
+  useEffect(() => {
+    if (!deployment) return;
+    const expiresMs = new Date(deployment.expiresAt).getTime();
+    if (now >= expiresMs) {
+      setDeployment(null);
+      // Fire-and-forget server cleanup; lazy GET handler also handles this.
+      fetch(`/api/projects/${projectId}/deploy`).catch(() => {});
+    }
+  }, [now, deployment, projectId]);
 
   // Recompute versions when chat history changes.
   // Auto-jump to the latest version whenever a new one is appended, so the
@@ -512,17 +647,14 @@ export default function ProjectChatPage() {
     loadSidebarProjects();
   }, [loadMessages, loadSidebarProjects]);
 
-  const handleSubmit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!input.trim() || isLoading) return;
-
-    const userContent = input.trim();
-    setInput("");
+  const runGeneration = async (
+    userContent: string,
+    options: { modelId?: string; onDone?: () => void } = {}
+  ) => {
     setIsLoading(true);
     setGenerationError("");
     setStreamingText("");
 
-    // Optimistically add user message to UI
     const optimisticUserMsg: Message = {
       role: "user",
       content: userContent,
@@ -534,7 +666,10 @@ export default function ProjectChatPage() {
       const res = await fetch(`/api/projects/${projectId}/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: userContent, modelId: selectedModelId || undefined }),
+        body: JSON.stringify({
+          message: userContent,
+          modelId: options.modelId || selectedModelId || undefined,
+        }),
       });
 
       if (!res.ok) {
@@ -544,7 +679,6 @@ export default function ProjectChatPage() {
         return;
       }
 
-      // Parse SSE stream
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buffer = "";
@@ -571,9 +705,6 @@ export default function ProjectChatPage() {
                 setStreamingText(fullText);
                 break;
               case "done": {
-                // Replace streaming text with final assistant message.
-                // Store the full response (including ---FILE:--- blocks) so
-                // extractVersions() can parse it without a page refresh.
                 setStreamingText("");
                 const assistantMsg: Message = {
                   role: "assistant",
@@ -585,9 +716,10 @@ export default function ProjectChatPage() {
                 if (data.files && data.files.length > 0) {
                   setGeneratedFiles(data.files);
                   setActiveFileIndex(0);
-                  setActiveTab("code");
+                  setActiveTab("preview");
                 }
                 loadSidebarProjects();
+                options.onDone?.();
                 break;
               }
               case "error":
@@ -604,6 +736,66 @@ export default function ProjectChatPage() {
       setStreamingText("");
       setIsLoading(false);
     }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!input.trim() || isLoading) return;
+    const userContent = input.trim();
+    setInput("");
+    await runGeneration(userContent);
+  };
+
+  const handleFixWithAI = async () => {
+    if (!previewError || isLoading || isFixing) return;
+    setIsFixing(true);
+    // Prefer the fastest available model so the fix lands quickly.
+    const fastModel = availableModels.find((m) => m.tier === "fast");
+    const fixMessage = `The preview is throwing this error — please fix it without changing other behavior:\n\n${previewError.title} ${previewError.message}`.slice(0, 4000);
+    try {
+      await runGeneration(fixMessage, {
+        modelId: fastModel?.id,
+        onDone: () => setPreviewError(null),
+      });
+    } finally {
+      setIsFixing(false);
+    }
+  };
+
+  const handleDeployDemo = async () => {
+    if (generatedFiles.length === 0 || isDeploying) return;
+    setIsDeploying(true);
+    setDeployError("");
+    try {
+      const res = await fetch(`/api/projects/${projectId}/deploy`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setDeployError(data.error || "Deploy failed");
+        return;
+      }
+      setDeployment({ url: data.url, expiresAt: data.expiresAt });
+    } catch (err) {
+      setDeployError((err as Error).message || "Deploy failed");
+    } finally {
+      setIsDeploying(false);
+    }
+  };
+
+  const handleCopyDeployUrl = async () => {
+    if (!deployment) return;
+    await navigator.clipboard.writeText(deployment.url);
+    setDeployCopied(true);
+    setTimeout(() => setDeployCopied(false), 2000);
+  };
+
+  const handleEndDemo = async () => {
+    if (!deployment) return;
+    try {
+      await fetch(`/api/projects/${projectId}/deploy`, { method: "DELETE" });
+    } catch { /* ignore */ }
+    setDeployment(null);
   };
 
   const handleSelectVersion = (versionIndex: number) => {
@@ -816,6 +1008,35 @@ export default function ProjectChatPage() {
             </Badge>
           </div>
           <div className="flex items-center gap-2">
+            {deployment ? (
+              <DeploymentPill
+                deployment={deployment}
+                now={now}
+                onCopy={handleCopyDeployUrl}
+                copied={deployCopied}
+                onEnd={handleEndDemo}
+              />
+            ) : (
+              <Button
+                variant="outline"
+                size="sm"
+                className="gap-2"
+                onClick={handleDeployDemo}
+                disabled={generatedFiles.length === 0 || isDeploying}
+                title={
+                  generatedFiles.length === 0
+                    ? "Generate code first"
+                    : "Deploy a public demo link (15 min)"
+                }
+              >
+                {isDeploying ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Globe className="h-4 w-4" />
+                )}
+                {isDeploying ? "Deploying…" : "Deploy Demo"}
+              </Button>
+            )}
             <Button
               variant="outline"
               size="sm"
@@ -837,6 +1058,20 @@ export default function ProjectChatPage() {
             </Button>
           </div>
         </header>
+        {deployError && (
+          <div className="border-b border-red-200 bg-red-50 px-4 py-2 text-sm text-red-700 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-300">
+            <div className="flex items-center justify-between">
+              <span>Deploy failed: {deployError}</span>
+              <button
+                type="button"
+                onClick={() => setDeployError("")}
+                className="rounded p-0.5 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/50"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Chat + Preview */}
         <div ref={containerRef} className="flex flex-1 overflow-hidden">
@@ -1191,6 +1426,49 @@ export default function ProjectChatPage() {
                         className="flex-1 w-full bg-white"
                         title="Live Preview"
                       />
+                      {previewError && (
+                        <div className="border-t border-red-200 bg-red-50 p-3 dark:border-red-900/50 dark:bg-red-950/30">
+                          <div className="flex items-start gap-3">
+                            <div className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-red-100 text-red-600 dark:bg-red-900/50 dark:text-red-400">
+                              !
+                            </div>
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm font-semibold text-red-700 dark:text-red-300">
+                                {previewError.title}
+                              </p>
+                              <p className="mt-0.5 truncate font-mono text-xs text-red-600 dark:text-red-400" title={previewError.message}>
+                                {previewError.message.split("\n")[0]}
+                              </p>
+                            </div>
+                            <Button
+                              size="sm"
+                              onClick={handleFixWithAI}
+                              disabled={isLoading || isFixing}
+                              className="shrink-0 gap-1.5 bg-red-600 hover:bg-red-700"
+                            >
+                              {isFixing ? (
+                                <>
+                                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                  Fixing…
+                                </>
+                              ) : (
+                                <>
+                                  <Sparkles className="h-3.5 w-3.5" />
+                                  Fix with AI
+                                </>
+                              )}
+                            </Button>
+                            <button
+                              type="button"
+                              onClick={() => setPreviewError(null)}
+                              className="shrink-0 rounded p-1 text-red-500 hover:bg-red-100 dark:hover:bg-red-900/50"
+                              title="Dismiss"
+                            >
+                              ✕
+                            </button>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>

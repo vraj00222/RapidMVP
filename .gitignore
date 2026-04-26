@@ -44,3 +44,7 @@ REPOMAP.md
 
 # claude code (local project settings, may contain API keys)
 .claude/
+
+# vercel plugin / agent skill cache (local tooling state, not project source)
+.agents/
+skills-lock.json

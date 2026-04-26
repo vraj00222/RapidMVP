@@ -6,6 +6,13 @@ export interface IProjectFile {
   language: string;
 }
 
+export interface IDeployment {
+  url: string;
+  deploymentId: string;
+  createdAt: Date;
+  expiresAt: Date;
+}
+
 export interface IProject extends Document {
   name: string;
   description: string;
@@ -20,6 +27,7 @@ export interface IProject extends Document {
     content: string;
     timestamp: Date;
   }[];
+  deployment?: IDeployment | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -73,6 +81,15 @@ const ProjectSchema = new Schema<IProject>(
         timestamp: { type: Date, default: Date.now },
       },
     ],
+    deployment: {
+      type: {
+        url: { type: String, required: true },
+        deploymentId: { type: String, required: true },
+        createdAt: { type: Date, default: Date.now },
+        expiresAt: { type: Date, required: true },
+      },
+      default: null,
+    },
   },
   {
     timestamps: true,
