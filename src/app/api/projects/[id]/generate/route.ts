@@ -1,9 +1,28 @@
 import { NextRequest, NextResponse } from "next/server";
+import { createHash } from "crypto";
 import mongoose from "mongoose";
 import { auth } from "@/lib/auth/auth";
 import dbConnect from "@/lib/db/mongoose";
 import Project from "@/models/Project";
+import GenerationCache from "@/models/GenerationCache";
 import { AVAILABLE_MODELS, getModelById, type AIModel } from "@/lib/ai/models";
+
+// Tunable: how long a cache-hit replay should appear to take. Real generations
+// run as fast as the LLM streams; cache replays are paced to match this so
+// fresh and cached generations look identical to the user.
+const CACHE_REPLAY_MS = 20_000;
+
+function hashPrompt(userMessage: string, isIteration: boolean): string {
+  // Cache key: trimmed user message + a flag for whether this is a fresh
+  // generation or an iteration. Iteration prompts are only meaningful in the
+  // context of a specific codebase, so we don't try to share their cache
+  // across projects — the flag isolates them from fresh-generation hits.
+  const normalized = userMessage.trim().toLowerCase().replace(/\s+/g, " ");
+  return createHash("sha256")
+    .update(`${isIteration ? "iter:" : "fresh:"}${normalized}`)
+    .digest("hex")
+    .slice(0, 32);
+}
 
 const BASE_SYSTEM_PROMPT = `You are RapidMVP, an expert full-stack developer. When the user describes what they want to build, generate clean, production-ready code.
 
@@ -19,7 +38,7 @@ IMPORTANT: Return your response in this exact format:
 
 Rules:
 - Use React with JSX and Tailwind CSS
-- Create complete, working components with well-structured code
+- Be concise — favor short, focused components over verbose ones. A typical landing page is 4–6 small components, NOT 12. Skip excessive boilerplate, long mocked data arrays, or repeated decorative sections.
 - Use modern React patterns (hooks, functional components)
 - Make the UI look polished and professional with Tailwind CSS
 - Generate multiple files with proper separation of concerns (e.g. components/Header.tsx, components/PricingCard.tsx, pages/App.tsx)
@@ -135,7 +154,7 @@ async function streamOpenAICompatible(
     body: JSON.stringify({
       model,
       messages,
-      max_tokens: 8192,
+      max_tokens: 5000,
       temperature: 0.7,
       stream: true,
     }),
@@ -274,7 +293,7 @@ async function streamAnthropic(
     },
     body: JSON.stringify({
       model,
-      max_tokens: 8192,
+      max_tokens: 5000,
       stream: true,
       system: systemMsg?.content || "",
       messages: chatMsgs.map((m) => ({ role: m.role, content: m.content })),
@@ -459,6 +478,11 @@ export async function POST(
     return NextResponse.json({ error: msg }, { status: 503 });
   }
 
+  // Cache lookup: same prompt → same output. Iteration prompts are cached
+  // separately because they only make sense in context of an existing project.
+  const promptHash = hashPrompt(message, isIteration);
+  const cached = await GenerationCache.findOne({ promptHash }).lean();
+
   // Return SSE stream
   const encoder = new TextEncoder();
   const stream = new ReadableStream({
@@ -471,24 +495,60 @@ export async function POST(
 
       try {
         send("meta", {
-          provider: usedModel.provider,
-          model: usedModel.id,
-          modelName: usedModel.name,
+          provider: cached ? cached.provider : usedModel.provider,
+          model: cached ? cached.modelId : usedModel.id,
+          modelName: cached ? cached.modelName : usedModel.name,
           mode: isIteration ? "iteration" : "initial",
+          cached: !!cached,
         });
 
-        const aiStream = await streamModel(usedModel, chatMessages);
-        const reader = aiStream.getReader();
         let fullText = "";
 
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          fullText += value;
-          send("token", { token: value });
-        }
+        if (cached) {
+          // --- Cache replay path: simulate streaming over CACHE_REPLAY_MS ---
+          fullText = cached.fullText;
+          // Split into ~80 chunks so the cursor moves visibly throughout the
+          // replay. Pace evenly across the target duration.
+          const total = fullText.length;
+          const chunkCount = Math.min(80, Math.max(20, Math.ceil(total / 200)));
+          const chunkSize = Math.ceil(total / chunkCount);
+          const intervalMs = Math.max(50, Math.floor(CACHE_REPLAY_MS / chunkCount));
+          for (let i = 0; i < total; i += chunkSize) {
+            const chunk = fullText.slice(i, i + chunkSize);
+            send("token", { token: chunk });
+            await new Promise((r) => setTimeout(r, intervalMs));
+          }
+          // Bump hit count async; don't block the response
+          GenerationCache.updateOne(
+            { promptHash },
+            { $inc: { hitCount: 1 } }
+          ).exec().catch(() => {});
+          console.log(`Cache hit: ${promptHash} (${total} chars)`);
+        } else {
+          // --- Fresh generation path ---
+          const aiStream = await streamModel(usedModel, chatMessages);
+          const reader = aiStream.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            fullText += value;
+            send("token", { token: value });
+          }
+          console.log(`Generation streamed via ${usedModel.name} (${usedModel.provider})`);
 
-        console.log(`Generation streamed via ${usedModel.name} (${usedModel.provider})`);
+          // Save to cache for next time. Only cache successful generations
+          // that produced at least one file block.
+          if (fullText.includes("---FILE:") && fullText.includes("---END FILE---")) {
+            GenerationCache.create({
+              promptHash,
+              userMessage: message.trim().slice(0, 4000),
+              modelId: usedModel.id,
+              modelName: usedModel.name,
+              provider: usedModel.provider,
+              fullText,
+            }).catch((err) => console.error("Cache write failed:", err.message));
+          }
+        }
 
         // Parse final result
         const files = parseFilesFromResponse(fullText);
@@ -522,7 +582,7 @@ export async function POST(
           });
         }
 
-        send("done", { explanation, files, fullResponse: fullText });
+        send("done", { explanation, files, fullResponse: fullText, cached: !!cached });
       } catch (error) {
         console.error("AI generation error:", error);
         const errorMessage =

@@ -281,6 +281,42 @@ function extractExplanation(content: string): string {
   return cleaned.substring(0, idx).trim();
 }
 
+// Parse mid-stream progress so the user can see what the AI is doing while
+// file blocks are silently being written. Returns counts of completed files
+// and (if currently inside a file) the path being written and how many chars
+// have streamed so far.
+function streamProgress(content: string): {
+  completedFiles: { path: string; chars: number }[];
+  currentFile: { path: string; chars: number } | null;
+  totalChars: number;
+} {
+  const cleaned = stripThinkTags(content);
+  const completedFiles: { path: string; chars: number }[] = [];
+  const completedRe = /---FILE:\s*(.+?)---\n([\s\S]*?)---END FILE---/g;
+  let match;
+  while ((match = completedRe.exec(cleaned)) !== null) {
+    completedFiles.push({
+      path: match[1].trim(),
+      chars: match[2].length,
+    });
+  }
+  // After the last completed file (or before any files), check for an
+  // in-progress file block.
+  const lastEnd = cleaned.lastIndexOf("---END FILE---");
+  const tail = lastEnd === -1 ? cleaned : cleaned.slice(lastEnd + "---END FILE---".length);
+  const inProgressRe = /---FILE:\s*(.+?)---\n([\s\S]*)$/;
+  const inProgress = tail.match(inProgressRe);
+  let currentFile: { path: string; chars: number } | null = null;
+  if (inProgress) {
+    currentFile = { path: inProgress[1].trim(), chars: inProgress[2].length };
+  }
+  return {
+    completedFiles,
+    currentFile,
+    totalChars: cleaned.length,
+  };
+}
+
 const LOADING_WORDS = [
   "Thinking",
   "Crafting",
@@ -1133,21 +1169,45 @@ export default function ProjectChatPage() {
                     </div>
                   ))}
                   {isLoading && !streamingText && <LoadingIndicator />}
-                  {streamingText && (
-                    <div className="flex gap-4">
-                      <Avatar className="h-8 w-8 shrink-0">
-                        <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white">
-                          <Bot className="h-4 w-4" />
-                        </AvatarFallback>
-                      </Avatar>
-                      <div className="max-w-[80%] rounded-2xl bg-white px-4 py-3 shadow-sm dark:bg-zinc-800">
-                        <p className="whitespace-pre-wrap text-sm">
-                          {extractExplanation(stripThinkTags(streamingText))}
-                        </p>
-                        <span className="inline-block h-4 w-1 animate-pulse bg-violet-500 align-middle" />
+                  {streamingText && (() => {
+                    const progress = streamProgress(streamingText);
+                    return (
+                      <div className="flex gap-4">
+                        <Avatar className="h-8 w-8 shrink-0">
+                          <AvatarFallback className="bg-gradient-to-br from-violet-500 to-indigo-500 text-white">
+                            <Bot className="h-4 w-4" />
+                          </AvatarFallback>
+                        </Avatar>
+                        <div className="max-w-[80%] rounded-2xl bg-white px-4 py-3 shadow-sm dark:bg-zinc-800">
+                          <p className="whitespace-pre-wrap text-sm">
+                            {extractExplanation(stripThinkTags(streamingText))}
+                          </p>
+                          {(progress.completedFiles.length > 0 || progress.currentFile) && (
+                            <div className="mt-2 space-y-0.5 border-t border-zinc-200 pt-2 dark:border-zinc-700">
+                              {progress.completedFiles.map((f) => (
+                                <div key={f.path} className="flex items-center gap-2 text-xs text-zinc-500">
+                                  <Check className="h-3 w-3 text-emerald-500" />
+                                  <span className="font-mono truncate">{f.path}</span>
+                                </div>
+                              ))}
+                              {progress.currentFile && (
+                                <div className="flex items-center gap-2 text-xs text-violet-600 dark:text-violet-400">
+                                  <Loader2 className="h-3 w-3 animate-spin" />
+                                  <span className="font-mono truncate">
+                                    {progress.currentFile.path}
+                                  </span>
+                                  <span className="ml-auto shrink-0 text-zinc-400">
+                                    {progress.currentFile.chars} chars
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          <span className="inline-block h-4 w-1 animate-pulse bg-violet-500 align-middle" />
+                        </div>
                       </div>
-                    </div>
-                  )}
+                    );
+                  })()}
                   {generationError && (
                     <div className="mx-auto max-w-[80%] rounded-lg bg-red-50 p-3 text-sm text-red-600 dark:bg-red-950/30 dark:text-red-400">
                       {generationError}

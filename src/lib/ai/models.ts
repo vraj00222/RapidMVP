@@ -26,26 +26,26 @@ export interface AIModel {
 export const AVAILABLE_MODELS: AIModel[] = [
   // --- Novita (primary provider — verified working) ---
   {
-    id: "novita-deepseek-v3",
-    name: "DeepSeek V3",
-    provider: "novita",
-    modelId: "deepseek/deepseek-v3-0324",
-    tier: "standard",
-    description: "Recommended default. Fast streaming, strong code quality.",
-    contextWindow: 163840,
-    inputPrice: "$0.27",
-    outputPrice: "$0.40",
-  },
-  {
     id: "novita-qwen3-coder",
     name: "Qwen3 Coder 480B",
     provider: "novita",
     modelId: "qwen/qwen3-coder-480b-a35b-instruct",
     tier: "premium",
-    description: "Specialized code model. Best for complex multi-file projects.",
+    description: "Recommended default. 480B code model, ~18s for a full landing page.",
     contextWindow: 262144,
     inputPrice: "$0.30",
     outputPrice: "$2.40",
+  },
+  {
+    id: "novita-deepseek-v3",
+    name: "DeepSeek V3",
+    provider: "novita",
+    modelId: "deepseek/deepseek-v3-0324",
+    tier: "standard",
+    description: "Strong code quality, slower streaming (~25s for a landing page).",
+    contextWindow: 163840,
+    inputPrice: "$0.27",
+    outputPrice: "$0.40",
   },
   {
     id: "novita-deepseek-r1",
